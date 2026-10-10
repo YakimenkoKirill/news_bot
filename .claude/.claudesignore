@@ -1,0 +1,26 @@
+# Виртуальные окружения
+.venv/
+venv/
+env/
+
+# Секреты и конфиги
+.env
+*.pem
+secrets.json
+
+# Данные (чтобы не забить контекстное окно)
+data/raw/*.csv
+data/processed/*.parquet
+*.sqlite
+*.db
+
+# Кэш и скомпилированные файлы
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.pyc
+
+# История
+.git/
+.claude/

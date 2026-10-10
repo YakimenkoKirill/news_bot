@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(top -b -n1)",
+      "Bash(git push *)",
+      "Bash(rm .claude/settings.json && git status -s)",
+      "Bash(sed -i 's/^  requests_per_5s: 100$/  requests_per_5s: 40/; /^perp_study:/,/^$/ s/^  download_concurrency: 4$/  download_concurrency: 2/' configs/backtest.yaml)",
+      "Bash(sed -n '/^perp_study:/,/^$/p' configs/backtest.yaml)",
+      "Bash(curl -s -D - -o /dev/null \"https://api.bybit.com/v5/market/kline?category=linear&symbol=BTCUSDT&interval=60&limit=2\")",
+      "Bash(sed -i '/^perp_study:/,/^$/ { s/^  candidates: 100$/  candidates: 70/; s/^  requests_per_5s: 40$/  requests_per_5s: 20/ }' configs/backtest.yaml)"
+    ],
+    "additionalDirectories": [
+      "/home/second/project/bot/.claude"
+    ]
+  }
+}
