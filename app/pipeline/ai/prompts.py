@@ -4,11 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Protocol
-from urllib.parse import urlsplit
 
 from app.config import ChannelProfile
 
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"
 MAX_QUOTE_WORDS = 15
 ELLIPSIS = "…"
 RESPONSE_KEYS = ("relevant", "score", "title", "summary", "hashtags", "category")
@@ -20,7 +19,6 @@ class PromptNews(Protocol):
     """Поля новости для промпта (NewsItem подходит структурно)."""
 
     title: str
-    url: str
     clean_text: str | None
     raw_text: str
     published_at: datetime | None
@@ -62,18 +60,14 @@ def _system_message(profile: ChannelProfile) -> str:
     )
 
 
-def _source(url: str) -> str:
-    host = urlsplit(url).hostname or url
-    return host.removeprefix("www.")
-
-
 def build_messages(
     news: PromptNews, profile: ChannelProfile, max_input_chars: int
 ) -> list[dict[str, str]]:
     """Собирает сообщения для модели.
 
     Системное сообщение содержит только правила и профиль канала; заголовок,
-    источник, дата и текст новости — только в пользовательском сообщении.
+    дата и текст новости — только в пользовательском сообщении. Источник модели
+    не передаётся: ссылку на него добавляет публикатор.
 
     Args:
         news: Новость.
@@ -85,12 +79,7 @@ def build_messages(
     """
     published = news.published_at.isoformat() if news.published_at else "не указана"
     text = truncate_words(news.clean_text or news.raw_text, max_input_chars)
-    user = (
-        f"Заголовок: {news.title}\n"
-        f"Источник: {_source(news.url)}\n"
-        f"Дата публикации: {published}\n"
-        f"Текст:\n{text}"
-    )
+    user = f"Заголовок: {news.title}\nДата публикации: {published}\nТекст:\n{text}"
     return [
         {"role": "system", "content": _system_message(profile)},
         {"role": "user", "content": user},

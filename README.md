@@ -23,7 +23,7 @@
 
 ```bash
 make install                  # .venv и зависимости
-cp .env.example .env          # заполните значения, см. таблицу ниже
+cp -n .env.example .env       # только при первой установке: -n не перезапишет готовый .env
 make db-up                    # PostgreSQL 16 в Docker (+ БД для тестов)
 make migrate                  # схема БД
 .venv/bin/python scripts/telethon_login.py   # разовый вход Telethon, см. ниже
