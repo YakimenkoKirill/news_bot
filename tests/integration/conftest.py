@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -63,3 +64,9 @@ async def session(
 ) -> AsyncIterator[AsyncSession]:
     async with session_factory() as opened:
         yield opened
+
+
+@pytest.fixture
+def pipeline_now() -> datetime:
+    """Подменённое «сейчас» для стадий пайплайна (совпадает по дате с now() в БД)."""
+    return datetime.now(UTC).replace(microsecond=0)
