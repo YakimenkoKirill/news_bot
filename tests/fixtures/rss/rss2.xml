@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>Пример новостей</title>
+    <link>https://news.example.com/</link>
+    <description>Тестовая лента RSS 2.0</description>
+    <item>
+      <title>  Первая новость  </title>
+      <link>https://news.example.com/articles/1</link>
+      <guid isPermaLink="false">news-1</guid>
+      <pubDate>Sat, 10 Oct 2026 09:30:00 +0300</pubDate>
+      <author>editor@news.example.com (Редактор)</author>
+      <category>Технологии</category>
+      <description>&lt;p&gt;Краткое описание первой новости.&lt;/p&gt;</description>
+      <media:content url="https://cdn.news.example.com/1.jpg" medium="image" type="image/jpeg"/>
+    </item>
+    <item>
+      <title>Вторая новость без guid</title>
+      <link>https://news.example.com/articles/2</link>
+      <pubDate>Sat, 10 Oct 2026 08:00:00 GMT</pubDate>
+      <description>Описание второй новости.</description>
+      <enclosure url="https://cdn.news.example.com/2.mp3" type="audio/mpeg" length="100"/>
+      <enclosure url="https://cdn.news.example.com/2.png" type="image/png" length="200"/>
+    </item>
+    <item>
+      <title>Третья новость с миниатюрой</title>
+      <link>https://news.example.com/articles/3</link>
+      <guid>news-3</guid>
+      <pubDate>Sat, 10 Oct 2026 07:00:00</pubDate>
+      <description>Описание третьей новости.</description>
+      <content:encoded><![CDATA[<p>Полный текст третьей новости.</p>]]></content:encoded>
+      <media:thumbnail url="https://cdn.news.example.com/3-thumb.jpg"/>
+    </item>
+    <item>
+      <title>Новость без ссылки</title>
+      <guid isPermaLink="false">news-no-link</guid>
+      <description>Такая запись пропускается.</description>
+    </item>
+  </channel>
+</rss>

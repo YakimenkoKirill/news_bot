@@ -126,3 +126,9 @@ async def test_subclass_can_fetch() -> None:
     )
     items = await StaticCollector().fetch(source)
     assert [item.source_id for item in items] == [7]
+
+    source.fetch_state = {"cursor": 5}
+    result = await StaticCollector().fetch_result(source)
+    assert [item.source_id for item in result.items] == [7]
+    assert result.fetch_state == {"cursor": 5}
+    assert result.fetch_state is not source.fetch_state

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -85,3 +86,19 @@ class BaseCollector(ABC):
             TemporaryCollectorError: Временная ошибка, источник можно опросить позже.
             PermanentCollectorError: Источник недоступен или настроен неверно.
         """
+
+    async def fetch_result(self, source: Source) -> FetchResult:
+        """Забирает новости вместе с новым состоянием сборщика для source.fetch_state.
+
+        По умолчанию состояние не меняется; сборщики с условными запросами
+        (ETag, Last-Modified) переопределяют метод.
+        """
+        return FetchResult(items=await self.fetch(source), fetch_state=dict(source.fetch_state))
+
+
+@dataclass(frozen=True)
+class FetchResult:
+    """Результат опроса источника: новости и состояние для следующего опроса."""
+
+    items: list[RawItem]
+    fetch_state: dict[str, Any] = field(default_factory=dict)

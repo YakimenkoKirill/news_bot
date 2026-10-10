@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Битая лента</title>
+    <link>https://broken.example.com/</link>
+    <item>
+      <title>Новость & без экранирования</title>
+      <link>https://broken.example.com/a/1</link>
+      <guid>broken-1</guid>
+      <description>Текст новости в битой ленте.</description>
+    </item>
+  </channel>

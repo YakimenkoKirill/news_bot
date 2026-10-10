@@ -62,6 +62,10 @@ strict = true
 exclude = ["^prompts/"]
 plugins = ["pydantic.mypy"]
 
+[[tool.mypy.overrides]]
+module = ["feedparser", "feedparser.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
