@@ -72,6 +72,7 @@ class CollectorsConfig(BaseModel):
     per_domain_rps: float = Field(gt=0)
     max_retries: int = Field(ge=0)
     robots_ttl_h: float = Field(gt=0)
+    min_article_chars: int = Field(ge=1)
 
 
 class _YamlSource(PydanticBaseSettingsSource):
