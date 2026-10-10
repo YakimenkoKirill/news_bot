@@ -103,6 +103,15 @@ class NormalizeConfig(BaseModel):
     lang_ratio: float = Field(gt=0, le=1)
 
 
+class FiltersConfig(BaseModel):
+    """Секция filters: отсев новостей до обработки моделью."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    max_age_h: float = Field(gt=0)
+    allowed_languages: list[str] = Field(min_length=1)
+
+
 class _YamlSource(PydanticBaseSettingsSource):
     """Источник настроек из уже слитых yaml-файлов, самый низкий приоритет."""
 
@@ -145,6 +154,7 @@ class Settings(BaseSettings):
     collectors: CollectorsConfig
     telegram: TelegramConfig
     normalize: NormalizeConfig
+    filters: FiltersConfig
 
     @field_validator("telegram_admin_ids", mode="before")
     @classmethod

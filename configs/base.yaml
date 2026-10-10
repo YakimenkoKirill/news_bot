@@ -34,4 +34,5 @@ normalize:
   lang_ratio: 0.6
 
 filters:
+  max_age_h: 24
   allowed_languages: ["ru"]
