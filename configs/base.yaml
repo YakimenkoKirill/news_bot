@@ -6,3 +6,6 @@ db:
   max_overflow: 5
   pool_pre_ping: true
   echo: false
+
+collectors:
+  user_agent: "MyNewsBot/1.0 (+https://t.me/ward3r0)"
