@@ -145,6 +145,7 @@ class AiConfig(BaseModel):
     price_input_per_1m: Decimal = Field(ge=0)
     price_output_per_1m: Decimal = Field(ge=0)
     daily_budget: Decimal = Field(gt=0)
+    min_score: float = Field(ge=0, le=1)
 
 
 class ChannelProfile(BaseModel):
