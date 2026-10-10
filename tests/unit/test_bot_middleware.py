@@ -6,8 +6,9 @@ import structlog
 
 from app.bot import texts
 from app.bot.middlewares import AdminOnlyMiddleware
-from app.config import BotConfig, Settings
+from app.config import Settings
 from app.logging import setup_logging
+from tests.config_helpers import bot_config
 
 SETTINGS_ADMIN = 111
 DB_ADMIN = 222
@@ -69,7 +70,7 @@ def repo() -> AdminRepo:
 @pytest.fixture
 def middleware(clock: Clock, repo: AdminRepo) -> AdminOnlyMiddleware:
     settings = Settings.model_construct(
-        telegram_admin_ids=[SETTINGS_ADMIN], bot=BotConfig(refusal_cooldown_s=COOLDOWN)
+        telegram_admin_ids=[SETTINGS_ADMIN], bot=bot_config(refusal_cooldown_s=COOLDOWN)
     )
     return AdminOnlyMiddleware(settings, repo, clock=clock)
 

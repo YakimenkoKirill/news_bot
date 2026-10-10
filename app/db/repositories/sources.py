@@ -32,6 +32,10 @@ class SourceRepository:
         """Возвращает источник по id или None."""
         return await self._session.get(Source, source_id)
 
+    async def list_all(self) -> Sequence[Source]:
+        """Возвращает все источники (включённые и выключенные) в порядке id."""
+        return (await self._session.scalars(select(Source).order_by(Source.id))).all()
+
     async def list_enabled(self, type: SourceType | None = None) -> Sequence[Source]:
         """Возвращает включённые источники, при необходимости только заданного типа."""
         stmt = select(Source).where(Source.enabled.is_(True)).order_by(Source.id)

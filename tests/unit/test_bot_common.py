@@ -4,8 +4,9 @@ import pytest
 
 from app.bot import BotDeps, create_bot, create_dispatcher, texts
 from app.bot.handlers.common import bot_commands, setup_bot_commands
-from app.config import BotConfig, Settings
+from app.config import Settings
 from tests.bot_helpers import make_bot, message_update
+from tests.config_helpers import bot_config
 
 ADMIN = 111
 STRANGER = 999
@@ -18,7 +19,7 @@ class NoDbAdmins:
 
 def _settings() -> Settings:
     return Settings.model_construct(
-        telegram_admin_ids=[ADMIN], bot=BotConfig(refusal_cooldown_s=60)
+        telegram_admin_ids=[ADMIN], bot=bot_config(refusal_cooldown_s=60)
     )
 
 

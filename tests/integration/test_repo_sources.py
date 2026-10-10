@@ -147,3 +147,10 @@ async def test_register_error_is_atomic_under_concurrency(
         source = await SourceRepository(session).get(source_id)
         assert source is not None
         assert source.error_count == calls
+
+
+async def test_list_all_includes_disabled(session: AsyncSession) -> None:
+    repo = SourceRepository(session)
+    first = await repo.add(_source("https://a.example/rss"))
+    second = await repo.add(_source("https://b.example/rss", enabled=False))
+    assert [s.id for s in await repo.list_all()] == [first.id, second.id]

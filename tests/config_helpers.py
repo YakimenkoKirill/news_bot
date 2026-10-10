@@ -4,7 +4,13 @@ from typing import Any
 
 import yaml
 
-from app.config import CONFIGS_DIR, CollectorsConfig, NormalizeConfig, TelegramConfig
+from app.config import (
+    CONFIGS_DIR,
+    BotConfig,
+    CollectorsConfig,
+    NormalizeConfig,
+    TelegramConfig,
+)
 
 
 def base_section(name: str) -> dict[str, Any]:
@@ -27,3 +33,8 @@ def telegram_config(**overrides: Any) -> TelegramConfig:
 def normalize_config(**overrides: Any) -> NormalizeConfig:
     """Секция normalize из base.yaml с заменой отдельных значений."""
     return NormalizeConfig(**{**base_section("normalize"), **overrides})
+
+
+def bot_config(**overrides: Any) -> BotConfig:
+    """Секция bot из base.yaml с заменой отдельных значений."""
+    return BotConfig(**{**base_section("bot"), **overrides})

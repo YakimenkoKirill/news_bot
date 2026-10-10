@@ -79,3 +79,4 @@ publisher:
 
 bot:
   refusal_cooldown_s: 60
+  page_size: 10

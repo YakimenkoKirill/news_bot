@@ -209,6 +209,7 @@ class BotConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     refusal_cooldown_s: float = Field(ge=0)
+    page_size: int = Field(ge=1)
 
 
 class _YamlSource(PydanticBaseSettingsSource):

@@ -8,6 +8,7 @@ COMMANDS: dict[str, str] = {
     "status": "состояние пайплайна",
     "pause": "приостановить обработку и публикацию",
     "resume": "возобновить работу",
+    "sources": "источники: включить, выключить, удалить, проверить",
 }
 
 PAUSED = "Пайплайн поставлен на паузу: обработка моделью и публикация остановлены."
@@ -30,3 +31,14 @@ def help_text() -> str:
     lines = ["<b>Команды</b>"]
     lines.extend(f"/{command} — {description}" for command, description in COMMANDS.items())
     return "\n".join(lines)
+
+
+NO_SOURCES = "Источников пока нет. Добавьте первый: /add_source"
+SOURCE_NOT_FOUND = "Источник не найден — возможно, его уже удалили."
+SOURCE_DELETED = "Источник удалён."
+CHECK_UNSUPPORTED = "Пробный сбор для Telegram-каналов не поддерживается: они собираются событиями."
+
+
+def confirm_delete(name: str) -> str:
+    """Вопрос перед удалением источника."""
+    return f"Удалить источник «{name}» вместе с его новостями?"

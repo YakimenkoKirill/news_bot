@@ -12,10 +12,11 @@ import structlog
 from app.bot import BotDeps, create_dispatcher, texts
 from app.bot.handlers import status
 from app.bot.handlers.status import StatusDeps, build_status
-from app.config import BotConfig, Settings
+from app.config import Settings
 from app.domain.enums import NewsStatus
 from app.logging import setup_logging
 from tests.bot_helpers import make_bot, message_update
+from tests.config_helpers import bot_config
 
 ADMIN = 111
 NOW = datetime(2026, 10, 10, 9, 0, tzinfo=UTC)
@@ -82,7 +83,7 @@ def _deps(db: Db) -> StatusDeps:
 
 async def _send(db: Db, text: str) -> list[str]:
     settings = Settings.model_construct(
-        telegram_admin_ids=[ADMIN], bot=BotConfig(refusal_cooldown_s=60)
+        telegram_admin_ids=[ADMIN], bot=bot_config(refusal_cooldown_s=60)
     )
 
     class NoAdmins:
