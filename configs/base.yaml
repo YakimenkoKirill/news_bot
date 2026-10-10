@@ -1,0 +1,115 @@
+app:
+  timezone: Europe/Moscow
+
+db:
+  pool_size: 5
+  max_overflow: 5
+  pool_pre_ping: true
+  echo: false
+
+collectors:
+  user_agent: "MyNewsBot/1.0 (+https://t.me/ward3r0)"
+  http_timeout_s: 20
+  per_domain_rps: 1
+  max_retries: 3
+  robots_ttl_h: 24
+  min_article_chars: 200
+  max_articles_per_run: 10
+  max_consecutive_errors: 5
+  stale_after_h: 6
+  max_parallel_sources: 5
+  min_interval_min: 5
+
+telegram:
+  flood_wait_extra_s: 1
+  flood_wait_max_retries: 3
+  flood_wait_max_s: 300
+  title_max_chars: 120
+  album_wait_s: 2
+  ad_markers: ["#реклама", "erid"]
+  skip_forwards: true
+  catch_up_limit: 100
+
+normalize:
+  drop_query_params: ["utm_*", "fbclid", "gclid", "yclid"]
+  lang_ratio: 0.6
+
+filters:
+  max_age_h: 24
+  allowed_languages: ["ru"]
+
+dedup:
+  first_paragraph_chars: 300
+  window_h: 48
+  # стартовое значение, уточняется scripts/eval_dedup.py
+  simhash_max_distance: 3
+
+pipeline:
+  batch_size: 20
+
+ai:
+  model: "deepseek-v4-flash"
+  temperature: 0.3
+  timeout_s: 60
+  max_concurrency: 3
+  max_retries: 3
+  max_input_chars: 6000
+  price_input_per_1m: 0.256    # $ за 1 млн входных токенов
+  price_output_per_1m: 1.02    # $ за 1 млн выходных токенов
+  daily_budget: 0.5            # $ в сутки, при достижении обработка останавливается
+  min_score: 0.5     # порог интереса новости, от 0 до 1
+channel:
+  topic: "технологии и искусственный интеллект"   # тематика канала
+  language: "ru"                                   # язык постов
+  tone: "нейтральный, деловой, без кликбейта"      # тон пересказа
+  max_title_chars: 90                              # длина заголовка поста
+  max_summary_chars: 700                           # длина пересказа
+  hashtags_max: 3                                  # сколько хэштегов максимум
+
+publisher:
+  # лимиты Bot API: подпись к медиа 1024, текст сообщения 4096 символов
+  caption_limit: 1024
+  text_limit: 4096
+  min_summary_chars: 200
+  image_types: ["image/jpeg", "image/png", "image/webp"]
+  # фото по URL в Bot API: не больше 5 МБ
+  image_max_bytes: 5242880
+  min_interval_min: 10
+  max_retries: 3
+  quiet_hours: ["23:00", "07:00"]
+
+bot:
+  refusal_cooldown_s: 60
+  page_size: 10
+  max_keyword_chars: 50
+
+moderation:
+  snooze_min: 60
+
+alerts:
+  throttle_min: 30
+
+scheduler:
+  collect_every_s: 60
+  normalize_every_s: 30
+  ai_every_s: 30
+  publish_every_s: 30
+  stale_every_min: 30
+  review_every_min: 5
+  heartbeat_every_s: 60
+  misfire_grace_s: 60
+  failures_before_alert: 3
+
+metrics:
+  max_delay_min: 15
+  max_rejected_share: 0.2
+  max_duplicate_share: 0.02
+
+health:
+  max_age_s: 180
+  db_timeout_s: 5
+  startup_grace_s: 300
+
+backup:
+  keep_days: 7
+  dir: backups

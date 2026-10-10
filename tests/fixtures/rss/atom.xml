@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Пример Atom</title>
+  <link href="https://blog.example.org/"/>
+  <updated>2026-10-10T10:00:00Z</updated>
+  <id>urn:uuid:feed-1</id>
+  <entry>
+    <title>Запись Atom</title>
+    <link rel="alternate" href="https://blog.example.org/posts/atom-1"/>
+    <link rel="enclosure" type="image/webp" href="https://blog.example.org/img/atom-1.webp"/>
+    <id>urn:uuid:entry-1</id>
+    <updated>2026-10-10T10:00:00+02:00</updated>
+    <summary>Краткое содержание записи.</summary>
+    <content type="html">&lt;p&gt;Полный текст записи Atom.&lt;/p&gt;</content>
+  </entry>
+  <entry>
+    <title>Запись без даты публикации</title>
+    <link href="https://blog.example.org/posts/atom-2"/>
+    <id>urn:uuid:entry-2</id>
+    <summary>Вторая запись.</summary>
+  </entry>
+</feed>

@@ -1,0 +1,65 @@
+# Виртуальные окружения
+.venv/
+venv/
+env/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Переменные окружения и секреты
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.json
+
+# Кэш тестов и линтеров
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Данные и локальные БД
+*.sqlite
+*.sqlite3
+*.db
+*.csv
+*.parquet
+*.joblib
+data/
+backups/
+
+# Python & байткод
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+wheels/
+*.egg-info/
+
+# Настройки IDE и редакторов
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Системные файлы
+.DS_Store
+Thumbs.db
+
+# Логи
+*.log
+logs/
+!tests/fixtures/
+!tests/fixtures/**
+
+.pipeline/
+.claude/settings.local.json
+
+# Параметры забора бэкапов на компьютере пользователя (хост, ключ)
+ops/backup/pull.ini

@@ -1,0 +1,448 @@
+"""Точка входа: жизненный цикл компонентов и остановка по сигналам."""
+
+from __future__ import annotations
+
+import asyncio
+import signal
+import sys
+from collections.abc import Callable, Sequence
+from contextlib import AbstractAsyncContextManager
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from typing import Protocol
+from zoneinfo import ZoneInfo
+
+import structlog
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.alerts import AlertService
+from app.bot import BotDeps, create_bot, create_dispatcher
+from app.bot.handlers import keywords as keywords_handlers
+from app.bot.handlers import moderation as moderation_handlers
+from app.bot.handlers import source_add as source_add_handlers
+from app.bot.handlers import sources as sources_handlers
+from app.bot.handlers import status as status_handlers
+from app.bot.handlers.common import setup_bot_commands
+from app.bot.handlers.keywords import KeywordsDeps
+from app.bot.handlers.moderation import ModerationDeps
+from app.bot.handlers.source_add import SourceAddDeps
+from app.bot.handlers.sources import SourcesDeps
+from app.bot.handlers.status import StatusDeps
+from app.bot.moderation import BotReviewNotifier, ReviewNotifierDeps
+from app.collectors.base import BaseCollector
+from app.collectors.health import SourceHealthTracker
+from app.collectors.http import HttpClient
+from app.collectors.robots import RobotsChecker
+from app.collectors.rss import RssCollector
+from app.collectors.runner import CollectionDeps, run_collection_cycle
+from app.collectors.telegram.client import TelegramAuthRequired, build_client
+from app.collectors.telegram.collector import TelegramCollector, TelegramDeps
+from app.collectors.web import WebCollector
+from app.components import (
+    BotPollingComponent,
+    ClosingComponent,
+    DatabaseComponent,
+    SchedulerComponent,
+)
+from app.config import Settings, get_settings
+from app.db.base import create_engine, create_session_factory, session_scope
+from app.db.repositories.misc import AdminRepository, KeywordRepository, SettingsRepository
+from app.db.repositories.news import NewsRepository
+from app.db.repositories.posts import ProcessedPostRepository, PublicationRepository
+from app.db.repositories.sources import SourceRepository
+from app.domain.enums import SourceType
+from app.health import HEARTBEAT_SETTING, heartbeat_value
+from app.logging import setup_logging
+from app.pipeline.ai.budget import BudgetGuard
+from app.pipeline.ai.client import DeepSeekClient
+from app.pipeline.ai.processor import AiProcessor, AiRepos
+from app.pipeline.stage_ai import AiStageDeps, process_normalized_batch
+from app.pipeline.stage_normalize import NormalizeDeps, process_new_batch
+from app.publisher.media import ImageCheck, check_image
+from app.publisher.publisher import Publisher
+from app.publisher.stage_publish import PublishDeps, publish_due
+from app.scheduler import SchedulerDeps, build_scheduler
+
+log = structlog.get_logger(__name__)
+
+STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM)
+
+
+class Component(Protocol):
+    """Компонент приложения с асинхронным запуском и остановкой."""
+
+    @property
+    def name(self) -> str:
+        """Имя компонента для логов."""
+        raise NotImplementedError
+
+    async def start(self) -> None:
+        """Запускает компонент."""
+
+    async def stop(self) -> None:
+        """Останавливает компонент."""
+
+
+class Application:
+    """Запускает компоненты по порядку и останавливает в обратном порядке."""
+
+    def __init__(self, components: Sequence[Component]) -> None:
+        self._components = list(components)
+        self._started: list[Component] = []
+
+    @property
+    def components(self) -> list[Component]:
+        """Компоненты в порядке запуска."""
+        return list(self._components)
+
+    async def start(self) -> None:
+        """Запускает все компоненты.
+
+        Если start() компонента упал, уже запущенные компоненты останавливаются,
+        а исключение пробрасывается дальше.
+        """
+        for component in self._components:
+            try:
+                await component.start()
+            except Exception:
+                log.exception("component.start_failed", component=component.name)
+                await self.stop()
+                raise
+            self._started.append(component)
+            log.info("component.started", component=component.name)
+
+    async def stop(self) -> None:
+        """Останавливает запущенные компоненты в обратном порядке.
+
+        Ошибка в stop() одного компонента логируется и не мешает остановить остальные.
+        """
+        while self._started:
+            component = self._started.pop()
+            try:
+                await component.stop()
+            except Exception:
+                log.exception("component.stop_failed", component=component.name)
+            else:
+                log.info("component.stopped", component=component.name)
+
+    async def serve(self, stop_event: asyncio.Event) -> None:
+        """Запускает компоненты, ждёт stop_event и останавливает их.
+
+        Args:
+            stop_event: Событие, по которому начинается остановка.
+        """
+        await self.start()
+        log.info("app.started", components=[c.name for c in self._components])
+        try:
+            await stop_event.wait()
+        finally:
+            await self.stop()
+            log.info("app.stopped")
+
+
+def build_components(settings: Settings) -> list[Component]:
+    """Создаёт и связывает компоненты приложения.
+
+    Порядок запуска: БД -> HTTP -> клиент модели -> бот -> Telegram-сборщик ->
+    планировщик; остановка — в обратном порядке. Вызывается внутри работающего
+    цикла событий, ни один компонент не создаёт свой.
+
+    Args:
+        settings: Настройки приложения.
+
+    Returns:
+        Компоненты в порядке запуска.
+    """
+    started_at = datetime.now(UTC)
+    engine = create_engine(settings)
+    factory = create_session_factory(engine)
+
+    def scope() -> AbstractAsyncContextManager[AsyncSession]:
+        return session_scope(factory)
+
+    http = HttpClient(settings.collectors)
+    robots = RobotsChecker(
+        http, settings.collectors.user_agent, timedelta(hours=settings.collectors.robots_ttl_h)
+    )
+    bot = create_bot(settings)
+    admins = _Admins(settings, scope)
+    alerts = AlertService(bot, admins.ids, settings.alerts)
+    tz = ZoneInfo(settings.app.timezone)
+
+    def health(session: AsyncSession) -> SourceHealthTracker:
+        return SourceHealthTracker(SourceRepository(session), alerts, settings.collectors)
+
+    async def is_known_url(url: str) -> bool:
+        async with scope() as session:
+            return await NewsRepository(session).exists_url(url)
+
+    collectors: dict[SourceType, BaseCollector] = {
+        SourceType.RSS: RssCollector(http),
+        SourceType.WEB: WebCollector(http, robots, is_known_url, settings.collectors),
+    }
+    telegram = TelegramCollector(
+        build_client(settings),
+        TelegramDeps(
+            session_scope=scope,
+            source_repo=SourceRepository,
+            news_repo=NewsRepository,
+            health=health,
+        ),
+        settings.telegram,
+    )
+    deepseek = DeepSeekClient(settings, settings.ai)
+
+    async def image_check(url: str | None) -> ImageCheck:
+        return await check_image(url, http, settings.publisher)
+
+    notifier = BotReviewNotifier(
+        bot,
+        ReviewNotifierDeps(
+            session_scope=scope,
+            news_repo=NewsRepository,
+            source_repo=SourceRepository,
+            post_repo=ProcessedPostRepository,
+            admin_ids=admins.ids,
+            check_image=image_check,
+            cfg=settings.publisher,
+        ),
+    )
+    budget = BudgetGuard(_SessionCost(scope), alerts, settings.ai, tz)
+
+    def processor(repos: AiRepos) -> AiProcessor:
+        return AiProcessor(deepseek, settings.channel, repos, settings.ai)
+
+    collection_deps = CollectionDeps(
+        session_scope=scope,
+        source_repo=SourceRepository,
+        news_repo=NewsRepository,
+        health=health,
+        collectors=collectors,
+        max_parallel_sources=settings.collectors.max_parallel_sources,
+    )
+    normalize_deps = NormalizeDeps(
+        session_scope=scope,
+        news_repo=NewsRepository,
+        keyword_repo=KeywordRepository,
+        savepoint=lambda session: session.begin_nested(),
+        normalize=settings.normalize,
+        filters=settings.filters,
+        dedup=settings.dedup,
+        batch_size=settings.pipeline.batch_size,
+    )
+    ai_deps = AiStageDeps(
+        session_scope=scope,
+        news_repo=NewsRepository,
+        source_repo=SourceRepository,
+        post_repo=ProcessedPostRepository,
+        settings_repo=SettingsRepository,
+        processor=processor,
+        budget=budget,
+        notifier=notifier,
+        sink=alerts,
+        batch_size=settings.pipeline.batch_size,
+        max_concurrency=settings.ai.max_concurrency,
+    )
+    publish_deps = PublishDeps(
+        session_scope=scope,
+        news_repo=NewsRepository,
+        post_repo=ProcessedPostRepository,
+        source_repo=SourceRepository,
+        publication_repo=PublicationRepository,
+        settings_repo=SettingsRepository,
+        check_image=image_check,
+        publisher=Publisher(bot, settings.telegram_channel_id, settings.publisher),
+        sink=alerts,
+        cfg=settings.publisher,
+        channel_id=settings.telegram_channel_id,
+        tz=tz,
+    )
+    stale_tracker = SourceHealthTracker(_SessionSourceHealth(scope), alerts, settings.collectors)
+
+    async def check_stale(now: datetime) -> int:
+        async with scope() as session:
+            sources = await SourceRepository(session).list_enabled()
+        return len(await stale_tracker.check_stale(sources, now))
+
+    async def heartbeat(now: datetime) -> None:
+        async with scope() as session:
+            await SettingsRepository(session).set(
+                HEARTBEAT_SETTING, heartbeat_value(started_at, now)
+            )
+
+    scheduler, runner = build_scheduler(
+        SchedulerDeps(
+            collect=lambda now: run_collection_cycle(now, collection_deps),
+            normalize=lambda now: process_new_batch(now, normalize_deps),
+            ai=lambda now: process_normalized_batch(now, ai_deps),
+            publish=lambda now: publish_due(now, publish_deps),
+            check_stale=check_stale,
+            resend_due=notifier.resend_due,
+            heartbeat=heartbeat,
+            sink=alerts,
+        ),
+        settings.scheduler,
+    )
+
+    dispatcher = create_dispatcher(
+        BotDeps(
+            settings=settings,
+            admin_repo=admins,
+            routers=[
+                status_handlers.create_router(),
+                sources_handlers.create_router(),
+                source_add_handlers.create_router(),
+                keywords_handlers.create_router(),
+                moderation_handlers.create_router(),
+            ],
+            workflow_data={
+                "status_deps": StatusDeps(
+                    session_scope=scope,
+                    news_repo=NewsRepository,
+                    source_repo=SourceRepository,
+                    post_repo=ProcessedPostRepository,
+                    publication_repo=PublicationRepository,
+                    settings_repo=SettingsRepository,
+                    daily_budget=settings.ai.daily_budget,
+                    channel_id=settings.telegram_channel_id,
+                    tz=tz,
+                ),
+                "sources_deps": SourcesDeps(
+                    session_scope=scope,
+                    source_repo=SourceRepository,
+                    collectors=collectors,
+                    reload_telegram=telegram.reload_sources,
+                    page_size=settings.bot.page_size,
+                ),
+                "source_add_deps": SourceAddDeps(
+                    session_scope=scope,
+                    source_repo=SourceRepository,
+                    collectors=collectors,
+                    reload_telegram=telegram.reload_sources,
+                    min_interval_min=settings.collectors.min_interval_min,
+                ),
+                "keywords_deps": KeywordsDeps(
+                    session_scope=scope,
+                    keyword_repo=KeywordRepository,
+                    max_keyword_chars=settings.bot.max_keyword_chars,
+                ),
+                "moderation_deps": ModerationDeps(
+                    session_scope=scope,
+                    news_repo=NewsRepository,
+                    post_repo=ProcessedPostRepository,
+                    source_repo=SourceRepository,
+                    cfg=settings.publisher,
+                    snooze_min=settings.moderation.snooze_min,
+                ),
+            },
+        )
+    )
+    return [
+        DatabaseComponent(engine),
+        StartMarkerComponent(scope, started_at),
+        http,
+        ClosingComponent("ai_client", deepseek.close),
+        BotPollingComponent(bot, dispatcher, setup_bot_commands),
+        telegram,
+        SchedulerComponent(scheduler, runner),
+    ]
+
+
+class StartMarkerComponent:
+    """Записывает время старта процесса в heartbeat (для startup_grace_s в app.health)."""
+
+    name = "start_marker"
+
+    def __init__(
+        self,
+        scope: Callable[[], AbstractAsyncContextManager[AsyncSession]],
+        started_at: datetime,
+    ) -> None:
+        self._scope = scope
+        self._started_at = started_at
+
+    async def start(self) -> None:
+        """Сохраняет время старта; heartbeat ещё не было."""
+        async with self._scope() as session:
+            await SettingsRepository(session).set(
+                HEARTBEAT_SETTING, heartbeat_value(self._started_at, None)
+            )
+
+    async def stop(self) -> None:
+        """Ничего не делает: отметка старта не требует очистки."""
+
+
+class _Admins:
+    """Администраторы из настроек и таблицы admins (для алертов, модерации и middleware)."""
+
+    def __init__(
+        self, settings: Settings, scope: Callable[[], AbstractAsyncContextManager[AsyncSession]]
+    ) -> None:
+        self._configured = list(settings.telegram_admin_ids)
+        self._scope = scope
+
+    async def ids(self) -> Sequence[int]:
+        async with self._scope() as session:
+            stored = [admin.telegram_id for admin in await AdminRepository(session).list()]
+        return list(dict.fromkeys([*self._configured, *stored]))
+
+    async def is_admin(self, telegram_id: int) -> bool:
+        async with self._scope() as session:
+            return await AdminRepository(session).is_admin(telegram_id)
+
+
+class _SessionCost:
+    """Расход на модель для BudgetGuard: каждый запрос — в своей сессии."""
+
+    def __init__(self, scope: Callable[[], AbstractAsyncContextManager[AsyncSession]]) -> None:
+        self._scope = scope
+
+    async def cost_since(self, dt: datetime) -> Decimal:
+        async with self._scope() as session:
+            return await ProcessedPostRepository(session).cost_since(dt)
+
+
+class _SessionSourceHealth:
+    """Репозиторий здоровья источников для долгоживущего трекера: каждый вызов — своя сессия."""
+
+    def __init__(self, scope: Callable[[], AbstractAsyncContextManager[AsyncSession]]) -> None:
+        self._scope = scope
+
+    async def register_error(self, source_id: int) -> int:
+        async with self._scope() as session:
+            return await SourceRepository(session).register_error(source_id)
+
+    async def reset_errors(self, source_id: int) -> bool:
+        async with self._scope() as session:
+            return await SourceRepository(session).reset_errors(source_id)
+
+    async def mark_item_seen(self, source_id: int, at: datetime) -> bool:
+        async with self._scope() as session:
+            return await SourceRepository(session).mark_item_seen(source_id, at)
+
+
+async def run() -> None:
+    """Загружает настройки, настраивает логи и работает до SIGINT/SIGTERM.
+
+    Повторный сигнал во время остановки только повторно выставляет событие
+    и не прерывает остановку.
+    """
+    settings = get_settings()
+    setup_logging(settings.log_level, json_output=True)
+    loop = asyncio.get_running_loop()
+    stop_event = asyncio.Event()
+    for sig in STOP_SIGNALS:
+        loop.add_signal_handler(sig, stop_event.set)
+    try:
+        await Application(build_components(settings)).serve(stop_event)
+    finally:
+        for sig in STOP_SIGNALS:
+            loop.remove_signal_handler(sig)
+
+
+def main() -> None:
+    """Запускает приложение; без сессии Telethon завершается с понятным сообщением."""
+    try:
+        asyncio.run(run())
+    except TelegramAuthRequired as exc:
+        sys.exit(f"Ошибка запуска: {exc}")
