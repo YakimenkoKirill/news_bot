@@ -95,6 +95,10 @@ class NewsRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    async def get(self, news_id: int) -> NewsItem | None:
+        """Возвращает новость по id или None."""
+        return await self._session.get(NewsItem, news_id)
+
     async def add_if_new(self, raw: RawNews) -> NewsItem | None:
         """Вставляет новость, если пары (source_id, external_id) ещё нет.
 

@@ -167,3 +167,13 @@ async def test_find_by_url_and_exclude_self(session: AsyncSession) -> None:
     by_hash = await repo.find_by_hash("h", since, exclude_id=first.id)
     assert by_hash is not None
     assert by_hash.id == second.id
+
+
+async def test_get_by_id(session: AsyncSession) -> None:
+    repo = NewsRepository(session)
+    item = await repo.add_if_new(Raw(await _source(session), "g1"))
+    assert item is not None
+    found = await repo.get(item.id)
+    assert found is not None
+    assert found.external_id == "g1"
+    assert await repo.get(999_999) is None

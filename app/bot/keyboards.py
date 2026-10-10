@@ -124,3 +124,37 @@ class KeywordAction(CallbackData, prefix="kw"):
 KW_DELETE = "delete"
 KW_ADD = "add"
 KW_TYPE = "type"
+
+
+class ReviewActionType(StrEnum):
+    """Решение модератора."""
+
+    PUBLISH = "publish"
+    EDIT = "edit"
+    REJECT = "reject"
+    LATER = "later"
+
+
+class ReviewAction(CallbackData, prefix="rv"):
+    """Кнопка под постом на модерации."""
+
+    action: ReviewActionType
+    post_id: int
+
+
+REVIEW_BUTTONS = [
+    (ReviewActionType.PUBLISH, "✅ Опубликовать"),
+    (ReviewActionType.EDIT, "✏️ Изменить"),
+    (ReviewActionType.REJECT, "🚫 Отклонить"),
+    (ReviewActionType.LATER, "⏰ Позже"),
+]
+REVIEW_BUTTONS_PER_ROW = 2
+
+
+def review_keyboard(post_id: int) -> InlineKeyboardMarkup:
+    """Кнопки модерации поста."""
+    builder = InlineKeyboardBuilder()
+    for action, label in REVIEW_BUTTONS:
+        builder.button(text=label, callback_data=ReviewAction(action=action, post_id=post_id))
+    builder.adjust(REVIEW_BUTTONS_PER_ROW)
+    return builder.as_markup()
