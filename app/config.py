@@ -236,6 +236,16 @@ class SchedulerConfig(BaseModel):
     failures_before_alert: int = Field(ge=1)
 
 
+class MetricsConfig(BaseModel):
+    """Секция metrics: цели MVP для отчёта по тестовому прогону."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    max_delay_min: float = Field(gt=0)
+    max_rejected_share: float = Field(ge=0, le=1)
+    max_duplicate_share: float = Field(ge=0, le=1)
+
+
 class BotConfig(BaseModel):
     """Секция bot: бот управления для администраторов."""
 
@@ -298,6 +308,7 @@ class Settings(BaseSettings):
     moderation: ModerationConfig
     alerts: AlertsConfig
     scheduler: SchedulerConfig
+    metrics: MetricsConfig
 
     @field_validator("telegram_admin_ids", mode="before")
     @classmethod

@@ -99,3 +99,8 @@ scheduler:
   heartbeat_every_s: 60
   misfire_grace_s: 60
   failures_before_alert: 3
+
+metrics:
+  max_delay_min: 15
+  max_rejected_share: 0.2
+  max_duplicate_share: 0.02
