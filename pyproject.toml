@@ -82,3 +82,13 @@ markers = [
     "integration: тесты с реальной БД или сетью",
 ]
 filterwarnings = ["error"]
+
+[tool.coverage.run]
+source = ["app"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 70
+
+[tool.coverage.json]
+output = "htmlcov/coverage.json"

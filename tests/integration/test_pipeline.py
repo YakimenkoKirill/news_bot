@@ -231,9 +231,10 @@ async def test_same_news_from_second_source_is_duplicate(
     statuses = await pipe.statuses()
     assert sorted(statuses.values()) == sorted([NewsStatus.NORMALIZED, NewsStatus.DUPLICATE])
     async with pipe.scope() as session:
-        items = list((await session.scalars(select(NewsItem).order_by(NewsItem.id))).all())
-    original, duplicate = items
-    assert duplicate.status is NewsStatus.DUPLICATE
+        items = list((await session.scalars(select(NewsItem))).all())
+    # Источники собираются параллельно: оригиналом может оказаться любая из двух новостей.
+    original = next(i for i in items if i.status is NewsStatus.NORMALIZED)
+    duplicate = next(i for i in items if i.status is NewsStatus.DUPLICATE)
     assert duplicate.cluster_id == original.id
     assert (duplicate.reject_reason or "").startswith("duplicate:hash:")
 

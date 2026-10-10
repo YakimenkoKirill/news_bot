@@ -4,7 +4,7 @@ BIN := $(VENV)/bin
 ENV_FILE ?= .env
 COMPOSE_DEV := docker compose --env-file $(ENV_FILE) -f docker/docker-compose.dev.yml
 
-.PHONY: install fmt lint test test-integration db-up db-down db-logs migrate migration
+.PHONY: install fmt lint test test-integration coverage db-up db-down db-logs migrate migration
 
 install:
 	$(PYTHON) -m venv $(VENV)
@@ -25,6 +25,11 @@ test:
 
 test-integration:
 	$(BIN)/pytest -m integration
+
+# unit и integration (интеграционные пропускаются без TEST_DATABASE_URL)
+coverage:
+	$(BIN)/pytest --cov=app --cov-report=term-missing --cov-report=json
+	$(BIN)/python scripts/check_coverage.py
 
 db-up:
 	$(COMPOSE_DEV) up -d --wait postgres
