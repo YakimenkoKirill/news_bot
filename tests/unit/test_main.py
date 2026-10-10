@@ -156,7 +156,7 @@ async def test_run_stops_on_sigterm_and_repeated_signal(
             await release_stop.wait()
 
     monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "build_components", lambda: [SlowStop("slow", calls)])
+    monkeypatch.setattr(main_module, "build_components", lambda settings: [SlowStop("slow", calls)])
 
     task = asyncio.create_task(main_module.run())
     await asyncio.wait_for(started.wait(), timeout=1)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -67,6 +68,13 @@ class JobRunner:
         self._threshold = failures_before_alert
         self._clock = clock
         self._failures: dict[str, int] = {}
+        self._running = 0
+        self._idle = asyncio.Event()
+        self._idle.set()
+
+    async def wait_idle(self) -> None:
+        """Ждёт завершения всех выполняющихся задач."""
+        await self._idle.wait()
 
     def failures(self, job_id: str) -> int:
         """Число ошибок задачи подряд."""
@@ -79,19 +87,26 @@ class JobRunner:
         (один раз за серию); успешный запуск сбрасывает счётчик.
         """
         now = self._clock()
-        with bind_context(job=job_id):
-            log.info("job.started")
-            try:
-                result = await job(now)
-            except Exception as exc:
-                count = self._failures.get(job_id, 0) + 1
-                self._failures[job_id] = count
-                log.exception("job.failed", failures=count)
-                if count == self._threshold:
-                    await self._alert(job_id, count, exc, now)
-                return
-            self._failures[job_id] = 0
-            log.info("job.done", result=repr(result))
+        self._running += 1
+        self._idle.clear()
+        try:
+            with bind_context(job=job_id):
+                log.info("job.started")
+                try:
+                    result = await job(now)
+                except Exception as exc:
+                    count = self._failures.get(job_id, 0) + 1
+                    self._failures[job_id] = count
+                    log.exception("job.failed", failures=count)
+                    if count == self._threshold:
+                        await self._alert(job_id, count, exc, now)
+                    return
+                self._failures[job_id] = 0
+                log.info("job.done", result=repr(result))
+        finally:
+            self._running -= 1
+            if self._running == 0:
+                self._idle.set()
 
     async def _alert(self, job_id: str, count: int, error: Exception, now: datetime) -> None:
         try:

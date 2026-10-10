@@ -85,6 +85,10 @@ class DeepSeekClient:
             max_retries=0,
         )
 
+    async def close(self) -> None:
+        """Закрывает HTTP-клиент openai."""
+        await self._client.close()
+
     async def chat_json(self, messages: Sequence[Message]) -> AiRawResponse:
         """Отправляет диалог и просит ответ в формате JSON-объекта.
 
