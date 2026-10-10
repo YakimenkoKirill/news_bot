@@ -14,3 +14,4 @@ collectors:
   max_retries: 3
   robots_ttl_h: 24
   min_article_chars: 200
+  max_articles_per_run: 10
