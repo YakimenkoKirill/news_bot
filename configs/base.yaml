@@ -45,3 +45,6 @@ dedup:
 
 pipeline:
   batch_size: 20
+
+ai:
+  model: "deepseek-v4-flash"
