@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  PYTHON_VERSION: "3.11"
+  # Заглушки для обязательных настроек: тесты и миграции не ходят во внешние API.
+  TELEGRAM_BOT_TOKEN: "123456:ci-placeholder"
+  TELEGRAM_CHANNEL_ID: "-1000000000000"
+  TELEGRAM_ADMIN_IDS: "1"
+  TELETHON_API_ID: "1"
+  TELETHON_API_HASH: "ci-placeholder"
+  DEEPSEEK_API_KEY: "ci-placeholder"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: make install
+      - run: make lint
+
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: make install
+      - run: make test
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: news
+          POSTGRES_PASSWORD: news
+          POSTGRES_DB: news_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U news -d news_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql+asyncpg://news:news@localhost:5432/news_test
+      TEST_DATABASE_URL: postgresql+asyncpg://news:news@localhost:5432/news_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: make install
+      - run: make migrate
+      - run: make test-integration
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make docker-build
