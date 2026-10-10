@@ -71,6 +71,7 @@ class CollectorsConfig(BaseModel):
     http_timeout_s: float = Field(gt=0)
     per_domain_rps: float = Field(gt=0)
     max_retries: int = Field(ge=0)
+    robots_ttl_h: float = Field(gt=0)
 
 
 class _YamlSource(PydanticBaseSettingsSource):

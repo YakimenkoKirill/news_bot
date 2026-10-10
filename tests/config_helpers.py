@@ -1,0 +1,19 @@
+"""Конфигурация для тестов: секции из configs/base.yaml с переопределениями."""
+
+from typing import Any
+
+import yaml
+
+from app.config import CONFIGS_DIR, CollectorsConfig
+
+
+def base_section(name: str) -> dict[str, Any]:
+    """Возвращает копию секции configs/base.yaml."""
+    data = yaml.safe_load((CONFIGS_DIR / "base.yaml").read_text(encoding="utf-8"))
+    section: dict[str, Any] = dict(data[name])
+    return section
+
+
+def collectors_config(**overrides: Any) -> CollectorsConfig:
+    """Секция collectors из base.yaml с заменой отдельных значений."""
+    return CollectorsConfig(**{**base_section("collectors"), **overrides})

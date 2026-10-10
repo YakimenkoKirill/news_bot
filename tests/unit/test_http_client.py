@@ -10,14 +10,11 @@ from yarl import URL
 
 from app.collectors.base import PermanentCollectorError, TemporaryCollectorError
 from app.collectors.http import HttpClient, parse_retry_after
-from app.config import CollectorsConfig
+from tests.config_helpers import collectors_config
 
 NOW = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
-CONFIG = CollectorsConfig(
-    user_agent="TestBot/1.0 (+https://t.me/test)",
-    http_timeout_s=20,
-    per_domain_rps=1,
-    max_retries=3,
+CONFIG = collectors_config(
+    user_agent="TestBot/1.0 (+https://t.me/test)", per_domain_rps=1, max_retries=3
 )
 
 

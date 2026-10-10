@@ -12,3 +12,4 @@ collectors:
   http_timeout_s: 20
   per_domain_rps: 1
   max_retries: 3
+  robots_ttl_h: 24
