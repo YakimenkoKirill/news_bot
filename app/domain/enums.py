@@ -32,3 +32,24 @@ class NewsStatus(StrEnum):
     SCHEDULED = "scheduled"
     PUBLISHED = "published"
     FAILED = "failed"
+
+
+class KeywordType(StrEnum):
+    """Тип ключевого слова: обязательное или стоп-слово."""
+
+    INCLUDE = "include"
+    EXCLUDE = "exclude"
+
+
+class AdminRole(StrEnum):
+    """Роль администратора бота."""
+
+    ADMIN = "admin"
+    OWNER = "owner"
+
+
+class PublicationStatus(StrEnum):
+    """Результат отправки поста в канал."""
+
+    SENT = "sent"
+    FAILED = "failed"

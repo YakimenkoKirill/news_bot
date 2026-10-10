@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum as PyEnum
 from typing import Any
 
@@ -11,19 +12,32 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
-from app.domain.enums import ModerationMode, NewsStatus, SourceType
+from app.domain.enums import (
+    AdminRole,
+    KeywordType,
+    ModerationMode,
+    NewsStatus,
+    PublicationStatus,
+    SourceType,
+)
+
+COST_PRECISION = 12
+COST_SCALE = 6
 
 ENUM_LENGTH = 32
 
@@ -106,6 +120,96 @@ class NewsItem(Base):
         JSONB, default=dict, server_default=text("'{}'::jsonb")
     )
     created_at: Mapped[datetime] = mapped_column(_tz(), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        _tz(), server_default=func.now(), onupdate=func.now()
+    )
+
+    processed_post: Mapped[ProcessedPost | None] = relationship(
+        back_populates="news_item", uselist=False, passive_deletes=True, lazy="raise"
+    )
+
+
+class ProcessedPost(Base):
+    """Пересказ новости, подготовленный моделью; не больше одного на новость."""
+
+    __tablename__ = "processed_posts"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    news_item_id: Mapped[int] = mapped_column(
+        ForeignKey("news_items.id", ondelete="CASCADE"), unique=True
+    )
+    ai_title: Mapped[str] = mapped_column(Text)
+    ai_summary: Mapped[str] = mapped_column(Text)
+    hashtags: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), default=list, server_default=text("'{}'::text[]")
+    )
+    category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    relevance_score: Mapped[float] = mapped_column(Float)
+    prompt_version: Mapped[str] = mapped_column(String(32))
+    prompt_tokens: Mapped[int] = mapped_column(Integer)
+    completion_tokens: Mapped[int] = mapped_column(Integer)
+    cost: Mapped[Decimal] = mapped_column(Numeric(COST_PRECISION, COST_SCALE))
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    snoozed_until: Mapped[datetime | None] = mapped_column(_tz(), nullable=True)
+    edited_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(_tz(), server_default=func.now())
+
+    news_item: Mapped[NewsItem] = relationship(back_populates="processed_post", lazy="raise")
+    publications: Mapped[list[Publication]] = relationship(
+        back_populates="processed_post", passive_deletes=True, lazy="raise"
+    )
+
+
+class Publication(Base):
+    """Попытка публикации поста в канал."""
+
+    __tablename__ = "publications"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    processed_post_id: Mapped[int] = mapped_column(
+        ForeignKey("processed_posts.id", ondelete="CASCADE"), index=True
+    )
+    channel_id: Mapped[int] = mapped_column(BigInteger)
+    message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(_tz(), nullable=True)
+    status: Mapped[PublicationStatus] = mapped_column(_enum_column(PublicationStatus))
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    processed_post: Mapped[ProcessedPost] = relationship(
+        back_populates="publications", lazy="raise"
+    )
+
+
+class Keyword(Base):
+    """Ключевое слово фильтра: include — обязательное, exclude — стоп-слово."""
+
+    __tablename__ = "keywords"
+    __table_args__ = (UniqueConstraint("word", "type"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    word: Mapped[str] = mapped_column(String(255))
+    type: Mapped[KeywordType] = mapped_column(_enum_column(KeywordType))
+
+
+class Admin(Base):
+    """Администратор бота управления."""
+
+    __tablename__ = "admins"
+
+    telegram_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    role: Mapped[AdminRole] = mapped_column(
+        _enum_column(AdminRole), default=AdminRole.ADMIN, server_default=AdminRole.ADMIN.value
+    )
+    created_at: Mapped[datetime] = mapped_column(_tz(), server_default=func.now())
+
+
+class Setting(Base):
+    """Изменяемая во время работы настройка (например, пауза публикаций)."""
+
+    __tablename__ = "settings"
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value: Mapped[Any] = mapped_column(JSONB)
     updated_at: Mapped[datetime] = mapped_column(
         _tz(), server_default=func.now(), onupdate=func.now()
     )
