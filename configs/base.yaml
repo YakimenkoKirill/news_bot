@@ -73,4 +73,5 @@ publisher:
   image_types: ["image/jpeg", "image/png", "image/webp"]
   # фото по URL в Bot API: не больше 5 МБ
   image_max_bytes: 5242880
+  min_interval_min: 10
   quiet_hours: ["23:00", "07:00"]

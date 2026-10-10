@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 from contextvars import ContextVar
+from datetime import datetime, time
 from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
@@ -29,6 +30,8 @@ Environment = Literal["dev", "prod"]
 CONFIGS_DIR = Path(__file__).resolve().parent.parent / "configs"
 ENVIRONMENTS: tuple[Environment, ...] = get_args(Environment)
 DEFAULT_ENV: Environment = "dev"
+QUIET_HOURS_FORMAT = "%H:%M"
+QUIET_HOURS_BOUNDS = 2
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 
@@ -171,6 +174,32 @@ class PublisherConfig(BaseModel):
     min_summary_chars: int = Field(ge=1)
     image_types: list[str] = Field(min_length=1)
     image_max_bytes: int = Field(ge=1)
+    min_interval_min: float = Field(ge=0)
+    quiet_hours: list[str]
+
+    @field_validator("quiet_hours")
+    @classmethod
+    def _check_quiet_hours(cls, value: list[str]) -> list[str]:
+        if not value:
+            return value
+        if len(value) != QUIET_HOURS_BOUNDS:
+            raise ValueError("quiet_hours: пусто или [начало, конец], например ['23:00', '07:00']")
+        for item in value:
+            try:
+                datetime.strptime(item, QUIET_HOURS_FORMAT)
+            except ValueError as exc:
+                raise ValueError(f"quiet_hours: время {item!r} не в формате ЧЧ:ММ") from exc
+        return value
+
+    @property
+    def quiet_window(self) -> tuple[time, time] | None:
+        """Тихие часы (начало, конец) в локальном времени или None."""
+        if not self.quiet_hours:
+            return None
+        start, end = (
+            datetime.strptime(item, QUIET_HOURS_FORMAT).time() for item in self.quiet_hours
+        )
+        return start, end
 
 
 class _YamlSource(PydanticBaseSettingsSource):
