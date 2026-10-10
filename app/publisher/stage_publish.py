@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
@@ -26,6 +27,7 @@ log = structlog.get_logger(__name__)
 
 PAUSED_SETTING = "paused"
 PUBLISHABLE_STATUSES = (NewsStatus.APPROVED, NewsStatus.SCHEDULED)
+MANUAL_STATUSES = (NewsStatus.APPROVED, NewsStatus.SCHEDULED, NewsStatus.PENDING_REVIEW)
 REASON_PUBLISH_ERROR = "publish_error"
 REASON_NO_POST = "no_processed_post"
 
@@ -55,6 +57,18 @@ class PublishNewsRepo(Protocol):
         reason: str | None = None,
     ) -> None:
         """Смена статуса через машину состояний."""
+        raise NotImplementedError
+
+
+class ManualNewsRepo(PublishNewsRepo, Protocol):
+    """Нужная ручной публикации часть NewsRepository."""
+
+    async def claim_one(self, news_id: int, statuses: Sequence[NewsStatus]) -> QueuedNews | None:
+        """Захватывает новость по id без ожидания чужой блокировки."""
+        raise NotImplementedError
+
+    async def get(self, news_id: int) -> QueuedNews | None:
+        """Новость по id."""
         raise NotImplementedError
 
 
@@ -181,12 +195,27 @@ async def publish_due(now: datetime, deps: PublishDeps) -> PublishReport:
         if item is None:
             return PublishReport(skipped="empty")
         with bind_context(news_id=item.id):
-            return await _publish(item, now, session, deps)
+            return await publish_item(item, now, session, deps)
 
 
-async def _publish(
+async def publish_item(
     item: QueuedNews, now: datetime, session: Any, deps: PublishDeps
 ) -> PublishReport:
+    """Публикует захваченную новость в открытой транзакции.
+
+    Проверяет картинку, собирает пост, подгоняет под лимиты и отправляет.
+    Успех — Publication(sent) и published; PublishError — Publication(failed),
+    failed и алерт publish_error; нет пересказа или источника — failed.
+
+    Args:
+        item: Захваченная новость в статусе approved или scheduled.
+        now: Текущий момент.
+        session: Сессия БД вызывающего.
+        deps: Зависимости стадии публикации.
+
+    Returns:
+        Отчёт о публикации.
+    """
     news_repo = deps.news_repo(session)
     post = await deps.post_repo(session).get_by_news(item.id)
     source = await deps.source_repo(session).get(item.source_id)
@@ -235,3 +264,95 @@ async def _publish(
     await news_repo.set_status(item.id, item.status, NewsStatus.PUBLISHED)
     log.info("publish.sent", message_id=message_id, with_photo=fitted.use_photo)
     return PublishReport(news_id=item.id, message_id=message_id)
+
+
+class ManualOutcome(StrEnum):
+    """Итог ручной публикации."""
+
+    PUBLISHED = "published"
+    NOT_FOUND = "not_found"
+    BUSY = "busy"
+    ALREADY_DONE = "already_done"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class ManualPublishDeps:
+    """Зависимости ручной публикации.
+
+    Attributes:
+        publish: Зависимости обычной стадии публикации.
+        news_repo: Репозиторий новостей с захватом по id.
+    """
+
+    publish: PublishDeps
+    news_repo: Callable[[Any], ManualNewsRepo]
+
+
+@dataclass(frozen=True)
+class ManualPublishResult:
+    """Результат ручной публикации.
+
+    Attributes:
+        outcome: Итог.
+        news_id: Новость.
+        message_id: message_id поста в канале (для published).
+        status: Текущий статус новости (для already_done).
+        error: Текст ошибки (для failed).
+    """
+
+    outcome: ManualOutcome
+    news_id: int
+    message_id: int | None = None
+    status: NewsStatus | None = None
+    error: str | None = None
+
+
+async def publish_now(
+    news_id: int, now: datetime, deps: ManualPublishDeps, initiator_id: int
+) -> ManualPublishResult:
+    """Публикует пост сразу, вне очереди, по решению администратора.
+
+    Не учитывает приоритет очереди, интервал, тихие часы и паузу; учитывает лимиты,
+    проверку картинки, машину состояний и блокировку строки. Пост из pending_review
+    сначала переводится в approved. Всё — в одной транзакции.
+
+    Args:
+        news_id: Новость.
+        now: Текущий момент.
+        deps: Зависимости.
+        initiator_id: Telegram ID администратора (для лога).
+
+    Returns:
+        Результат: published, not_found, busy, already_done или failed.
+    """
+    async with deps.publish.session_scope() as session:
+        result = await _publish_now(news_id, now, session, deps)
+    log.info(
+        "publish.manual", news_id=news_id, initiator_id=initiator_id, outcome=result.outcome.value
+    )
+    return result
+
+
+async def _publish_now(
+    news_id: int, now: datetime, session: Any, deps: ManualPublishDeps
+) -> ManualPublishResult:
+    news_repo = deps.news_repo(session)
+    item = await news_repo.claim_one(news_id, MANUAL_STATUSES)
+    if item is None:
+        current = await news_repo.get(news_id)
+        if current is None:
+            return ManualPublishResult(ManualOutcome.NOT_FOUND, news_id)
+        if current.status in MANUAL_STATUSES:
+            return ManualPublishResult(ManualOutcome.BUSY, news_id, status=current.status)
+        return ManualPublishResult(ManualOutcome.ALREADY_DONE, news_id, status=current.status)
+
+    if item.status is NewsStatus.PENDING_REVIEW:
+        await news_repo.set_status(item.id, NewsStatus.PENDING_REVIEW, NewsStatus.APPROVED)
+    with bind_context(news_id=item.id):
+        report = await publish_item(item, now, session, deps.publish)
+    if report.error is not None:
+        return ManualPublishResult(
+            ManualOutcome.FAILED, news_id, status=NewsStatus.FAILED, error=report.error
+        )
+    return ManualPublishResult(ManualOutcome.PUBLISHED, news_id, message_id=report.message_id)
