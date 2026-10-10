@@ -187,9 +187,10 @@ class NewsRepository:
             update(NewsItem)
             .where(NewsItem.id == news_id, NewsItem.status == expected)
             .values(**values)
-            .returning(NewsItem.id)
+            .returning(NewsItem)
+            .execution_options(populate_existing=True)
         )
-        if (await self._session.execute(stmt)).scalar_one_or_none() is None:
+        if (await self._session.scalars(stmt)).one_or_none() is None:
             raise StaleStatusError(news_id, expected)
 
     async def claim_batch(self, status: NewsStatus, limit: int) -> list[NewsItem]:
@@ -225,9 +226,13 @@ class NewsRepository:
         if unknown or not fields:
             raise ValueError(f"нельзя обновить поля: {sorted(unknown) or 'пустой набор'}")
         stmt = (
-            update(NewsItem).where(NewsItem.id == news_id).values(**fields).returning(NewsItem.id)
+            update(NewsItem)
+            .where(NewsItem.id == news_id)
+            .values(**fields)
+            .returning(NewsItem)
+            .execution_options(populate_existing=True)
         )
-        return (await self._session.execute(stmt)).scalar_one_or_none() is not None
+        return (await self._session.scalars(stmt)).one_or_none() is not None
 
     async def count_by_status(self) -> dict[NewsStatus, int]:
         """Возвращает число новостей в каждом статусе, включая нулевые."""

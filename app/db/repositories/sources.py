@@ -98,5 +98,11 @@ class SourceRepository:
         return (await self._session.execute(stmt)).scalar_one_or_none() is not None
 
     async def _update(self, source_id: int, **values: Any) -> bool:
-        stmt = update(Source).where(Source.id == source_id).values(**values).returning(Source.id)
-        return (await self._session.execute(stmt)).scalar_one_or_none() is not None
+        stmt = (
+            update(Source)
+            .where(Source.id == source_id)
+            .values(**values)
+            .returning(Source)
+            .execution_options(populate_existing=True)
+        )
+        return (await self._session.scalars(stmt)).one_or_none() is not None
