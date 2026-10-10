@@ -48,3 +48,7 @@ pipeline:
 
 ai:
   model: "deepseek-v4-flash"
+  temperature: 0.3
+  timeout_s: 60
+  max_concurrency: 3
+  max_retries: 3

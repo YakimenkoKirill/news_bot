@@ -130,6 +130,18 @@ class PipelineConfig(BaseModel):
     batch_size: int = Field(ge=1)
 
 
+class AiConfig(BaseModel):
+    """Секция ai: модель и параметры запросов к DeepSeek."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, protected_namespaces=())
+
+    model: str = Field(min_length=1)
+    temperature: float = Field(ge=0, le=2)
+    timeout_s: float = Field(gt=0)
+    max_concurrency: int = Field(ge=1)
+    max_retries: int = Field(ge=0)
+
+
 class _YamlSource(PydanticBaseSettingsSource):
     """Источник настроек из уже слитых yaml-файлов, самый низкий приоритет."""
 
@@ -175,6 +187,7 @@ class Settings(BaseSettings):
     filters: FiltersConfig
     dedup: DedupConfig
     pipeline: PipelineConfig
+    ai: AiConfig
 
     @field_validator("telegram_admin_ids", mode="before")
     @classmethod
