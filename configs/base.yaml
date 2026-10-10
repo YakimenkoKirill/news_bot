@@ -85,6 +85,7 @@ bot:
   refusal_cooldown_s: 60
   page_size: 10
   max_keyword_chars: 50
+  queue_title_chars: 60   # длина заголовка поста в списке /queue
 
 moderation:
   snooze_min: 60

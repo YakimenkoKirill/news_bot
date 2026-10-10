@@ -1,5 +1,7 @@
 """Тексты бота управления."""
 
+from datetime import datetime
+
 ACCESS_DENIED = "Этот бот доступен только администраторам канала."
 
 COMMANDS: dict[str, str] = {
@@ -104,3 +106,37 @@ ALERT_TEMPLATES = {
     "publish_error": "🔴 <b>Ошибка публикации</b>\n{message}",
     "job_failed": "⚠️ <b>Ошибка фоновой задачи</b>\n{message}",
 }
+
+QUEUE_TITLES = {"queue": "<b>Очередь публикации</b>", "review": "<b>На модерации</b>"}
+QUEUE_EMPTY = {"queue": "Очередь пуста.", "review": "На модерации ничего нет."}
+QUEUE_HINT = (
+    "Порядок — по интересу с поправкой на свежесть; новые интересные посты могут встать выше"
+)
+QUEUE_PAUSED = "⏸ Пайплайн на паузе — очередь стоит"
+QUEUE_NOT_IN_QUEUE = "Пост уже не в очереди: {status}"
+QUEUE_DELETED = "удалён"
+QUEUE_REVIEW_WARNING = " ⚠️"
+
+
+def queue_header(tab: str, count: int, page: int, pages: int) -> str:
+    """Заголовок страницы /queue: вкладка, число постов, страница."""
+    return f"{QUEUE_TITLES[tab]} · {count} постов · страница {page} из {pages}"
+
+
+def queue_eta_text(eta: datetime, today: datetime) -> str:
+    """Ожидаемое время выхода: «≈ЧЧ:ММ» сегодня, иначе «≈ДД.ММ ЧЧ:ММ» (оба в поясе канала)."""
+    if eta.date() == today.date():
+        return f"≈{eta:%H:%M}"
+    return f"≈{eta:%d.%m %H:%M}"
+
+
+def queue_line(number: int, title: str, source: str, score: float, eta: str | None) -> str:
+    """Строка вкладки «В очереди»; title и source уже экранированы."""
+    line = f"{number}. {title} — {source} · ★{score:.2f}"
+    return f"{line} · {eta}" if eta else line
+
+
+def review_line(number: int, title: str, source: str, score: float, has_note: bool) -> str:
+    """Строка вкладки «На модерации»; ⚠️ — у поста есть замечание проверки фактов."""
+    warning = QUEUE_REVIEW_WARNING if has_note else ""
+    return f"{number}. {title} — {source} · ★{score:.2f}{warning}"

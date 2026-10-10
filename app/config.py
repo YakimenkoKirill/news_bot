@@ -274,6 +274,7 @@ class BotConfig(BaseModel):
     refusal_cooldown_s: float = Field(ge=0)
     page_size: int = Field(ge=1)
     max_keyword_chars: int = Field(ge=1)
+    queue_title_chars: int = Field(ge=1)
 
 
 class _YamlSource(PydanticBaseSettingsSource):
