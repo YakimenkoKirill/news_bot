@@ -52,3 +52,11 @@ ai:
   timeout_s: 60
   max_concurrency: 3
   max_retries: 3
+
+channel:
+  topic: "технологии и искусственный интеллект"   # тематика канала
+  language: "ru"                                   # язык постов
+  tone: "нейтральный, деловой, без кликбейта"      # тон пересказа
+  max_title_chars: 90                              # длина заголовка поста
+  max_summary_chars: 700                           # длина пересказа
+  hashtags_max: 3                                  # сколько хэштегов максимум
