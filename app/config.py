@@ -212,6 +212,14 @@ class ModerationConfig(BaseModel):
     snooze_min: float = Field(gt=0)
 
 
+class AlertsConfig(BaseModel):
+    """Секция alerts: алерты администраторам."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    throttle_min: float = Field(ge=0)
+
+
 class BotConfig(BaseModel):
     """Секция bot: бот управления для администраторов."""
 
@@ -272,6 +280,7 @@ class Settings(BaseSettings):
     publisher: PublisherConfig
     bot: BotConfig
     moderation: ModerationConfig
+    alerts: AlertsConfig
 
     @field_validator("telegram_admin_ids", mode="before")
     @classmethod

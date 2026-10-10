@@ -95,3 +95,12 @@ REVIEW_DECISIONS = {
     "later": "⏰ Отложено на {minutes} мин",
     "edit": "✏️ Отредактировано и одобрено",
 }
+
+ALERT_TEMPLATES = {
+    "source_down": "🔴 <b>Источник не отвечает</b>\n{message}",
+    "source_stale": "🟡 <b>Источник молчит</b>\n{message}",
+    "ai_down": "🔴 <b>Модель недоступна</b>\n{message}",
+    "budget_exceeded": "💸 <b>Бюджет на модель исчерпан</b>\n{message}",
+    "publish_error": "🔴 <b>Ошибка публикации</b>\n{message}",
+    "job_failed": "⚠️ <b>Ошибка фоновой задачи</b>\n{message}",
+}

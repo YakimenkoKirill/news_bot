@@ -85,3 +85,6 @@ bot:
 
 moderation:
   snooze_min: 60
+
+alerts:
+  throttle_min: 30
