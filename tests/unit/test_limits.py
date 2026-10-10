@@ -6,7 +6,14 @@ from app.publisher.limits import fit_post, shorten_summary, utf16_len, visible_l
 from tests.config_helpers import base_section
 
 CFG = PublisherConfig(**base_section("publisher"))
-SMALL = PublisherConfig(caption_limit=120, text_limit=300, min_summary_chars=40)
+SMALL = PublisherConfig(
+    **{
+        **base_section("publisher"),
+        "caption_limit": 120,
+        "text_limit": 300,
+        "min_summary_chars": 40,
+    }
+)
 
 
 def _post(summary: str, title: str = "Заголовок", hashtags: list[str] | None = None) -> Post:

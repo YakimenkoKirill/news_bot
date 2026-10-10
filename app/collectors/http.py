@@ -43,6 +43,15 @@ class HttpResponse:
     url: str
 
 
+class HttpStatusError(PermanentCollectorError):
+    """Ответ 4xx (кроме 429): повтор бесполезен."""
+
+    def __init__(self, status: int, url: str) -> None:
+        super().__init__(f"HTTP {status} для {url}")
+        self.status = status
+        self.url = url
+
+
 class _RetryableStatus(Exception):
     """Ответ 5xx или 429, после которого запрос стоит повторить."""
 
@@ -151,7 +160,34 @@ class HttpClient:
             Ответ 2xx или 3xx (в том числе 304) после редиректов.
 
         Raises:
-            PermanentCollectorError: Ответ 4xx (кроме 429) или некорректный адрес.
+            HttpStatusError: Ответ 4xx (кроме 429).
+            PermanentCollectorError: Некорректный адрес.
+            TemporaryCollectorError: Повторы исчерпаны или прочая сетевая ошибка.
+        """
+        return await self.request("GET", url, headers)
+
+    async def request(
+        self,
+        method: str,
+        url: str,
+        headers: Mapping[str, str] | None = None,
+        *,
+        read_body: bool = True,
+    ) -> HttpResponse:
+        """Выполняет запрос с лимитом на домен и повторами, следуя редиректам.
+
+        Args:
+            method: HTTP-метод (GET, HEAD).
+            url: Адрес запроса.
+            headers: Дополнительные заголовки.
+            read_body: Читать ли тело ответа (False — только статус и заголовки).
+
+        Returns:
+            Ответ 2xx или 3xx после редиректов.
+
+        Raises:
+            HttpStatusError: Ответ 4xx (кроме 429).
+            PermanentCollectorError: Некорректный адрес.
             TemporaryCollectorError: Повторы исчерпаны или прочая сетевая ошибка.
         """
         if self._session is None:
@@ -165,7 +201,7 @@ class HttpClient:
         try:
             async for attempt in retrying:
                 with attempt:
-                    return await self._get_once(self._session, url, headers)
+                    return await self._request_once(self._session, method, url, headers, read_body)
         except RetryError as exc:
             last = exc.last_attempt.exception()
             raise TemporaryCollectorError(f"повторы исчерпаны для {url}: {last}") from last
@@ -175,15 +211,19 @@ class HttpClient:
             raise TemporaryCollectorError(f"ошибка запроса {url}: {exc}") from exc
         raise AssertionError("AsyncRetrying завершился без результата")
 
-    async def _get_once(
+    async def _request_once(
         self,
         session: aiohttp.ClientSession,
+        method: str,
         url: str,
         headers: Mapping[str, str] | None,
+        read_body: bool,
     ) -> HttpResponse:
         await self._limiter.wait(urlsplit(url).netloc.lower())
         request_headers = {"User-Agent": self._config.user_agent, **(headers or {})}
-        async with session.get(url, headers=request_headers) as resp:
+        async with session.request(
+            method, url, headers=request_headers, allow_redirects=True
+        ) as resp:
             status = resp.status
             if status == HTTPStatus.TOO_MANY_REQUESTS:
                 retry_after = parse_retry_after(resp.headers.get("Retry-After"), self._now())
@@ -191,8 +231,8 @@ class HttpClient:
             if status >= HTTPStatus.INTERNAL_SERVER_ERROR:
                 raise _RetryableStatus(status, url)
             if status >= HTTPStatus.BAD_REQUEST:
-                raise PermanentCollectorError(f"HTTP {status} для {url}")
-            body = await resp.read()
+                raise HttpStatusError(status, url)
+            body = await resp.read() if read_body else b""
             return HttpResponse(
                 status=status,
                 headers=CIMultiDictProxy(CIMultiDict(resp.headers)),

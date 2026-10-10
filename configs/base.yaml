@@ -70,3 +70,6 @@ publisher:
   caption_limit: 1024
   text_limit: 4096
   min_summary_chars: 200
+  image_types: ["image/jpeg", "image/png", "image/webp"]
+  # фото по URL в Bot API: не больше 5 МБ
+  image_max_bytes: 5242880

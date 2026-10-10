@@ -169,6 +169,8 @@ class PublisherConfig(BaseModel):
     caption_limit: int = Field(ge=1)
     text_limit: int = Field(ge=1)
     min_summary_chars: int = Field(ge=1)
+    image_types: list[str] = Field(min_length=1)
+    image_max_bytes: int = Field(ge=1)
 
 
 class _YamlSource(PydanticBaseSettingsSource):
