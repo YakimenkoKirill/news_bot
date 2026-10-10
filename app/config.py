@@ -178,6 +178,7 @@ class PublisherConfig(BaseModel):
     min_interval_min: float = Field(ge=0)
     quiet_hours: list[str]
     max_retries: int = Field(ge=0)
+    score_decay_per_h: float = Field(ge=0)
 
     @field_validator("quiet_hours")
     @classmethod

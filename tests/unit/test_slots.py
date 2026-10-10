@@ -82,3 +82,14 @@ def test_config_quiet_hours_validation() -> None:
     for bad in (["23:00"], ["25:00", "07:00"], ["23-00", "07:00"], ["1", "2", "3"]):
         with pytest.raises(ValidationError, match="quiet_hours"):
             PublisherConfig(**{**base, "quiet_hours": bad})
+
+
+def test_config_score_decay() -> None:
+    base = base_section("publisher")
+    assert PublisherConfig(**base).score_decay_per_h == 0.02
+    assert PublisherConfig(**{**base, "score_decay_per_h": 0}).score_decay_per_h == 0
+    with pytest.raises(ValidationError, match="score_decay_per_h"):
+        PublisherConfig(**{**base, "score_decay_per_h": -0.1})
+    without = {key: value for key, value in base.items() if key != "score_decay_per_h"}
+    with pytest.raises(ValidationError, match="score_decay_per_h"):
+        PublisherConfig(**without)

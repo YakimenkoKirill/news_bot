@@ -41,10 +41,10 @@ class QueuedNews(PostNews, Protocol):
 class PublishNewsRepo(Protocol):
     """Нужная стадии часть NewsRepository."""
 
-    async def claim_batch(
-        self, status: NewsStatus | Sequence[NewsStatus], limit: int
-    ) -> Sequence[QueuedNews]:
-        """Захватывает новости (SELECT ... FOR UPDATE SKIP LOCKED)."""
+    async def claim_next(
+        self, statuses: Sequence[NewsStatus], decay_per_h: float
+    ) -> QueuedNews | None:
+        """Захватывает пост с наибольшим приоритетом (FOR UPDATE SKIP LOCKED)."""
         raise NotImplementedError
 
     async def set_status(
@@ -154,7 +154,8 @@ async def publish_due(now: datetime, deps: PublishDeps) -> PublishReport:
     """Публикует не больше одного поста, если наступил разрешённый слот.
 
     Пауза -> выход; слот (интервал и тихие часы) в будущем -> выход; иначе
-    захватывается самый ранний пост в статусе approved или scheduled (SKIP LOCKED),
+    захватывается пост с наибольшим приоритетом в статусе approved или scheduled
+    (оценка интереса с поправкой score_decay_per_h на возраст, SKIP LOCKED),
     проверяется картинка (неподходящая — пост без фото), пост собирается,
     подгоняется под лимит и отправляется. Успех — Publication(sent) и published;
     PublishError — Publication(failed), failed и алерт publish_error.
@@ -176,10 +177,9 @@ async def publish_due(now: datetime, deps: PublishDeps) -> PublishReport:
             return PublishReport(skipped="slot", next_slot=slot)
 
         news_repo = deps.news_repo(session)
-        claimed = list(await news_repo.claim_batch(PUBLISHABLE_STATUSES, 1))
-        if not claimed:
+        item = await news_repo.claim_next(PUBLISHABLE_STATUSES, deps.cfg.score_decay_per_h)
+        if item is None:
             return PublishReport(skipped="empty")
-        item = claimed[0]
         with bind_context(news_id=item.id):
             return await _publish(item, now, session, deps)
 
