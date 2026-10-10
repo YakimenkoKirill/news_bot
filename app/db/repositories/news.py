@@ -211,20 +211,25 @@ class NewsRepository:
         if (await self._session.scalars(stmt)).one_or_none() is None:
             raise StaleStatusError(news_id, expected)
 
-    async def claim_batch(self, status: NewsStatus, limit: int) -> list[NewsItem]:
-        """Захватывает до limit самых старых новостей в статусе status.
+    async def claim_batch(
+        self, status: NewsStatus | Sequence[NewsStatus], limit: int
+    ) -> list[NewsItem]:
+        """Захватывает до limit самых старых новостей в статусе (или одном из статусов).
 
         Использует SELECT ... FOR UPDATE SKIP LOCKED: строки остаются заблокированными
         до конца транзакции вызывающего, параллельные обработчики получают другие строки.
 
         Raises:
-            ValueError: limit <= 0.
+            ValueError: limit <= 0 или пустой список статусов.
         """
         if limit <= 0:
             raise ValueError(f"limit должен быть положительным, получено {limit}")
+        statuses = [status] if isinstance(status, NewsStatus) else list(status)
+        if not statuses:
+            raise ValueError("не задан ни один статус")
         stmt = (
             select(NewsItem)
-            .where(NewsItem.status == status)
+            .where(NewsItem.status.in_(statuses))
             .order_by(NewsItem.created_at, NewsItem.id)
             .limit(limit)
             .with_for_update(skip_locked=True)

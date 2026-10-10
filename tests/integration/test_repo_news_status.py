@@ -164,3 +164,14 @@ async def _seed_more(session: AsyncSession) -> list[int]:
     session.add(item)
     await session.flush()
     return [item.id]
+
+
+async def test_claim_batch_multiple_statuses(session: AsyncSession) -> None:
+    repo = NewsRepository(session)
+    ids = await _seed(session, 4, status=S.APPROVED)
+    await repo.set_status(ids[0], S.APPROVED, S.SCHEDULED)
+    await repo.set_status(ids[1], S.APPROVED, S.PUBLISHED)
+    claimed = await repo.claim_batch([S.APPROVED, S.SCHEDULED], 10)
+    assert [item.id for item in claimed] == [ids[0], ids[2], ids[3]]
+    with pytest.raises(ValueError, match="статус"):
+        await repo.claim_batch([], 1)
