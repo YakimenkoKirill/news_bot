@@ -107,6 +107,9 @@ def message_to_raw_item(
     grouped_id = getattr(message, "grouped_id", None)
     if grouped_id is not None:
         raw_meta["grouped_id"] = int(grouped_id)
+    photo_ids = getattr(message, "photo_ids", None)
+    if photo_ids:
+        raw_meta["photo_ids"] = [int(photo_id) for photo_id in photo_ids]
 
     username = channel_username.lstrip("@")
     return RawItem(

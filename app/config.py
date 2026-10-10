@@ -88,6 +88,7 @@ class TelegramConfig(BaseModel):
     flood_wait_max_retries: int = Field(ge=0)
     flood_wait_max_s: float = Field(gt=0)
     title_max_chars: int = Field(ge=1)
+    album_wait_s: float = Field(gt=0)
 
 
 class _YamlSource(PydanticBaseSettingsSource):
