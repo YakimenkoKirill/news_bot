@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 from contextvars import ContextVar
+from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any, Literal, get_args
@@ -141,6 +142,9 @@ class AiConfig(BaseModel):
     max_concurrency: int = Field(ge=1)
     max_retries: int = Field(ge=0)
     max_input_chars: int = Field(ge=1)
+    price_input_per_1m: Decimal = Field(ge=0)
+    price_output_per_1m: Decimal = Field(ge=0)
+    daily_budget: Decimal = Field(gt=0)
 
 
 class ChannelProfile(BaseModel):
