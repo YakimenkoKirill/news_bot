@@ -18,6 +18,7 @@ collectors:
   max_consecutive_errors: 5
   stale_after_h: 6
   max_parallel_sources: 5
+  min_interval_min: 5
 
 telegram:
   flood_wait_extra_s: 1

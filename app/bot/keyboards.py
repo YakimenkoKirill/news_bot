@@ -88,3 +88,26 @@ def confirm_delete_keyboard(source_id: int, page: int) -> InlineKeyboardMarkup:
     )
     builder.adjust(2)
     return builder.as_markup()
+
+
+class AddSourceChoice(CallbackData, prefix="add"):
+    """Нажатие кнопки в диалоге добавления источника."""
+
+    field: str
+    value: str
+
+
+ADD_FIELD_TYPE = "type"
+ADD_FIELD_MODERATION = "moderation"
+ADD_FIELD_CONFIRM = "confirm"
+CONFIRM_CHECK = "check"
+CONFIRM_SAVE = "save"
+
+
+def choice_keyboard(field: str, options: Sequence[tuple[str, str]]) -> InlineKeyboardMarkup:
+    """Кнопки выбора: (значение, подпись)."""
+    builder = InlineKeyboardBuilder()
+    for value, label in options:
+        builder.button(text=label, callback_data=AddSourceChoice(field=field, value=value))
+    builder.adjust(len(options))
+    return builder.as_markup()

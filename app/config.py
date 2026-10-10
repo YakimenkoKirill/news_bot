@@ -81,6 +81,7 @@ class CollectorsConfig(BaseModel):
     max_consecutive_errors: int = Field(ge=1)
     stale_after_h: float = Field(gt=0)
     max_parallel_sources: int = Field(ge=1)
+    min_interval_min: int = Field(ge=1)
 
 
 class TelegramConfig(BaseModel):
