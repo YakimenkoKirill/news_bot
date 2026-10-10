@@ -136,3 +136,34 @@ async def test_max_tg_message_id_compares_numbers(session: AsyncSession) -> None
 
     assert await repo.max_tg_message_id(source_id) == 1000
     assert await repo.max_tg_message_id(other_id) == 5000
+
+
+async def test_find_by_url_and_exclude_self(session: AsyncSession) -> None:
+    repo = NewsRepository(session)
+    now = datetime.now(UTC)
+    source_id = await _source(session)
+    first = await repo.add_if_new(Raw(source_id, "u1"))
+    second = await repo.add_if_new(Raw(source_id, "u2"))
+    old = await repo.add_if_new(Raw(source_id, "u-old"))
+    assert first is not None
+    assert second is not None
+    assert old is not None
+    url = "https://a.example/news/1"
+    await _set(session, first.id, canonical_url=url, content_hash="h")
+    await _set(session, second.id, canonical_url=url, content_hash="h")
+    await _set(
+        session, old.id, canonical_url=url, content_hash="h", created_at=now - timedelta(days=5)
+    )
+    since = now - timedelta(days=1)
+
+    found = await repo.find_by_url(url, since)
+    assert found is not None
+    assert found.id == first.id
+    excluded = await repo.find_by_url(url, since, exclude_id=first.id)
+    assert excluded is not None
+    assert excluded.id == second.id
+    assert await repo.find_by_url("https://a.example/other", since) is None
+
+    by_hash = await repo.find_by_hash("h", since, exclude_id=first.id)
+    assert by_hash is not None
+    assert by_hash.id == second.id

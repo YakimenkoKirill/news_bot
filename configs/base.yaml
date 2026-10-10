@@ -39,3 +39,6 @@ filters:
 
 dedup:
   first_paragraph_chars: 300
+  window_h: 48
+  # стартовое значение, уточняется scripts/eval_dedup.py
+  simhash_max_distance: 3

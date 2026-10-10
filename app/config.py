@@ -118,6 +118,8 @@ class DedupConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     first_paragraph_chars: int = Field(ge=1)
+    window_h: float = Field(gt=0)
+    simhash_max_distance: int = Field(ge=0, le=64)
 
 
 class _YamlSource(PydanticBaseSettingsSource):

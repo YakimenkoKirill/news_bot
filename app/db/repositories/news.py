@@ -129,7 +129,23 @@ class NewsRepository:
         stmt = select(select(NewsItem.id).where(NewsItem.canonical_url == canonical_url).exists())
         return bool(await self._session.scalar(stmt))
 
-    async def find_by_hash(self, content_hash: str, since: datetime) -> NewsItem | None:
+    async def find_by_url(
+        self, canonical_url: str, since: datetime, exclude_id: int | None = None
+    ) -> NewsItem | None:
+        """Самая ранняя новость с таким каноническим URL, собранная не раньше since."""
+        stmt = (
+            select(NewsItem)
+            .where(NewsItem.canonical_url == canonical_url, NewsItem.created_at >= since)
+            .order_by(NewsItem.id)
+            .limit(1)
+        )
+        if exclude_id is not None:
+            stmt = stmt.where(NewsItem.id != exclude_id)
+        return (await self._session.scalars(stmt)).first()
+
+    async def find_by_hash(
+        self, content_hash: str, since: datetime, exclude_id: int | None = None
+    ) -> NewsItem | None:
         """Возвращает самую раннюю новость с таким хешем, собранную не раньше since."""
         stmt = (
             select(NewsItem)
@@ -137,6 +153,8 @@ class NewsRepository:
             .order_by(NewsItem.id)
             .limit(1)
         )
+        if exclude_id is not None:
+            stmt = stmt.where(NewsItem.id != exclude_id)
         return (await self._session.scalars(stmt)).first()
 
     async def recent_simhashes(self, since: datetime) -> list[tuple[int, int, int | None]]:
