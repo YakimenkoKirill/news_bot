@@ -9,3 +9,6 @@ db:
 
 collectors:
   user_agent: "MyNewsBot/1.0 (+https://t.me/ward3r0)"
+  http_timeout_s: 20
+  per_domain_rps: 1
+  max_retries: 3

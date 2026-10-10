@@ -62,6 +62,17 @@ class DbConfig(BaseModel):
     echo: bool
 
 
+class CollectorsConfig(BaseModel):
+    """Секция collectors: параметры HTTP-запросов сборщиков."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    user_agent: str = Field(min_length=1)
+    http_timeout_s: float = Field(gt=0)
+    per_domain_rps: float = Field(gt=0)
+    max_retries: int = Field(ge=0)
+
+
 class _YamlSource(PydanticBaseSettingsSource):
     """Источник настроек из уже слитых yaml-файлов, самый низкий приоритет."""
 
@@ -101,6 +112,7 @@ class Settings(BaseSettings):
 
     app: AppConfig
     db: DbConfig
+    collectors: CollectorsConfig
 
     @field_validator("telegram_admin_ids", mode="before")
     @classmethod
