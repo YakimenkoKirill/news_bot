@@ -11,11 +11,11 @@ from typing import Any, Protocol
 
 import structlog
 from aiogram import Router
-from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 
 from app.bot import texts
 from app.bot.keyboards import ReviewAction, ReviewActionType
+from app.bot.preview import mark_message
 from app.bot.states import EditPost
 from app.config import PublisherConfig
 from app.db.models import ProcessedPost
@@ -94,21 +94,6 @@ def _who(event: Any) -> tuple[int | None, str]:
     return user.id, name
 
 
-async def _mark_message(callback: Any, decision: str, who: str) -> None:
-    """Убирает кнопки и дописывает решение к сообщению с постом."""
-    message = callback.message
-    note = f"\n\n<b>{html.escape(decision)}</b> — {html.escape(who)}"
-    try:
-        if getattr(message, "caption", None) is not None:
-            await message.edit_caption(caption=(message.html_text or "") + note, reply_markup=None)
-        else:
-            await message.edit_text((message.html_text or "") + note, reply_markup=None)
-    except TelegramBadRequest as exc:
-        log.info("moderation.mark_fallback", error=exc.message)
-        await message.edit_reply_markup(reply_markup=None)
-        await message.answer(f"{html.escape(decision)} — {html.escape(who)}")
-
-
 async def _load(deps: ModerationDeps, post_id: int) -> tuple[ProcessedPost, ModeratedNews] | None:
     async with deps.session_scope() as session:
         post = await deps.post_repo(session).get(post_id)
@@ -167,7 +152,7 @@ async def on_review(
         decision = texts.REVIEW_DECISIONS[action.value]
     log.info("moderation.decision", post_id=post.id, action=action.value, user_id=user_id)
     await callback.answer()
-    await _mark_message(callback, decision, who)
+    await mark_message(callback, decision, who)
 
 
 async def _limit(deps: ModerationDeps, post: ProcessedPost, news: ModeratedNews) -> int:
