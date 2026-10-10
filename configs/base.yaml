@@ -36,3 +36,6 @@ normalize:
 filters:
   max_age_h: 24
   allowed_languages: ["ru"]
+
+dedup:
+  first_paragraph_chars: 300

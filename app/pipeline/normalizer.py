@@ -151,11 +151,15 @@ def detect_language(text: str, lang_ratio: float) -> str:
     return LANG_UNKNOWN
 
 
-def content_hash(text: str) -> str:
-    """sha256 от текста без регистра, пунктуации и лишних пробелов, с ё -> е."""
+def normalize_for_hash(text: str) -> str:
+    """Текст без регистра, пунктуации и лишних пробелов, с ё -> е (для хешей)."""
     normalized = text.lower().replace("ё", "е")
-    normalized = _WHITESPACE.sub(" ", _PUNCTUATION.sub(" ", normalized)).strip()
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return _WHITESPACE.sub(" ", _PUNCTUATION.sub(" ", normalized)).strip()
+
+
+def content_hash(text: str) -> str:
+    """sha256 от нормализованного текста (normalize_for_hash)."""
+    return hashlib.sha256(normalize_for_hash(text).encode("utf-8")).hexdigest()
 
 
 class RawNewsFields(Protocol):

@@ -112,6 +112,14 @@ class FiltersConfig(BaseModel):
     allowed_languages: list[str] = Field(min_length=1)
 
 
+class DedupConfig(BaseModel):
+    """Секция dedup: поиск дублей и кластеров."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    first_paragraph_chars: int = Field(ge=1)
+
+
 class _YamlSource(PydanticBaseSettingsSource):
     """Источник настроек из уже слитых yaml-файлов, самый низкий приоритет."""
 
@@ -155,6 +163,7 @@ class Settings(BaseSettings):
     telegram: TelegramConfig
     normalize: NormalizeConfig
     filters: FiltersConfig
+    dedup: DedupConfig
 
     @field_validator("telegram_admin_ids", mode="before")
     @classmethod
