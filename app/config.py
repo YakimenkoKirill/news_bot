@@ -256,6 +256,15 @@ class HealthConfig(BaseModel):
     startup_grace_s: float = Field(ge=0)
 
 
+class BackupConfig(BaseModel):
+    """Секция backup: бэкапы БД и сессии Telethon."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    keep_days: int = Field(ge=1)
+    dir: Path
+
+
 class BotConfig(BaseModel):
     """Секция bot: бот управления для администраторов."""
 
@@ -320,6 +329,7 @@ class Settings(BaseSettings):
     scheduler: SchedulerConfig
     metrics: MetricsConfig
     health: HealthConfig
+    backup: BackupConfig
 
     @field_validator("telegram_admin_ids", mode="before")
     @classmethod
@@ -445,3 +455,11 @@ class TestDatabaseSettings(BaseSettings):
 def get_test_database_url() -> str | None:
     """Возвращает TEST_DATABASE_URL из окружения или .env, если он задан."""
     return TestDatabaseSettings().test_database_url or None
+
+
+def child_process_env(**extra: str) -> dict[str, str]:
+    """Окружение для дочернего процесса: текущее окружение плюс extra.
+
+    Нужно, например, чтобы передать PGPASSWORD в pg_dump, не указывая пароль в argv.
+    """
+    return {**os.environ, **extra}
