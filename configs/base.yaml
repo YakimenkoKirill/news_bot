@@ -104,3 +104,8 @@ metrics:
   max_delay_min: 15
   max_rejected_share: 0.2
   max_duplicate_share: 0.02
+
+health:
+  max_age_s: 180
+  db_timeout_s: 5
+  startup_grace_s: 300

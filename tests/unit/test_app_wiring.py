@@ -19,7 +19,15 @@ from app.domain.alerts import AlertEvent
 from app.main import Application, Component, build_components
 from app.scheduler import JobRunner
 
-EXPECTED_ORDER = ["database", "http_client", "ai_client", "bot", "telegram_collector", "scheduler"]
+EXPECTED_ORDER = [
+    "database",
+    "start_marker",
+    "http_client",
+    "ai_client",
+    "bot",
+    "telegram_collector",
+    "scheduler",
+]
 
 
 @pytest.fixture
@@ -48,13 +56,13 @@ async def test_build_components_order_and_wiring(settings: Settings) -> None:
     try:
         assert [c.name for c in components] == EXPECTED_ORDER
         assert isinstance(components[0], DatabaseComponent)
-        assert isinstance(components[2], ClosingComponent)
-        assert isinstance(components[3], BotPollingComponent)
-        assert isinstance(components[5], SchedulerComponent)
+        assert isinstance(components[3], ClosingComponent)
+        assert isinstance(components[4], BotPollingComponent)
+        assert isinstance(components[6], SchedulerComponent)
     finally:
+        await components[5].stop()
         await components[4].stop()
         await components[3].stop()
-        await components[2].stop()
         await components[0].stop()
 
 
@@ -99,6 +107,7 @@ async def test_telethon_auth_error_rolls_back() -> None:
         await Application(components).start()
     assert rec.calls == [
         "start:database",
+        "start:start_marker",
         "start:http_client",
         "start:ai_client",
         "start:bot",
@@ -106,6 +115,7 @@ async def test_telethon_auth_error_rolls_back() -> None:
         "stop:bot",
         "stop:ai_client",
         "stop:http_client",
+        "stop:start_marker",
         "stop:database",
     ]
 

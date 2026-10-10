@@ -246,6 +246,16 @@ class MetricsConfig(BaseModel):
     max_duplicate_share: float = Field(ge=0, le=1)
 
 
+class HealthConfig(BaseModel):
+    """Секция health: проверка живости для healthcheck контейнера."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    max_age_s: float = Field(gt=0)
+    db_timeout_s: float = Field(gt=0)
+    startup_grace_s: float = Field(ge=0)
+
+
 class BotConfig(BaseModel):
     """Секция bot: бот управления для администраторов."""
 
@@ -309,6 +319,7 @@ class Settings(BaseSettings):
     alerts: AlertsConfig
     scheduler: SchedulerConfig
     metrics: MetricsConfig
+    health: HealthConfig
 
     @field_validator("telegram_admin_ids", mode="before")
     @classmethod

@@ -7,7 +7,7 @@ import signal
 import sys
 from collections.abc import Callable, Sequence
 from contextlib import AbstractAsyncContextManager
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Protocol
 from zoneinfo import ZoneInfo
@@ -51,6 +51,7 @@ from app.db.repositories.news import NewsRepository
 from app.db.repositories.posts import ProcessedPostRepository, PublicationRepository
 from app.db.repositories.sources import SourceRepository
 from app.domain.enums import SourceType
+from app.health import HEARTBEAT_SETTING, heartbeat_value
 from app.logging import setup_logging
 from app.pipeline.ai.budget import BudgetGuard
 from app.pipeline.ai.client import DeepSeekClient
@@ -139,9 +140,6 @@ class Application:
             log.info("app.stopped")
 
 
-HEARTBEAT_SETTING = "heartbeat_at"
-
-
 def build_components(settings: Settings) -> list[Component]:
     """Создаёт и связывает компоненты приложения.
 
@@ -155,6 +153,7 @@ def build_components(settings: Settings) -> list[Component]:
     Returns:
         Компоненты в порядке запуска.
     """
+    started_at = datetime.now(UTC)
     engine = create_engine(settings)
     factory = create_session_factory(engine)
 
@@ -267,7 +266,9 @@ def build_components(settings: Settings) -> list[Component]:
 
     async def heartbeat(now: datetime) -> None:
         async with scope() as session:
-            await SettingsRepository(session).set(HEARTBEAT_SETTING, now.isoformat())
+            await SettingsRepository(session).set(
+                HEARTBEAT_SETTING, heartbeat_value(started_at, now)
+            )
 
     scheduler, runner = build_scheduler(
         SchedulerDeps(
@@ -338,12 +339,37 @@ def build_components(settings: Settings) -> list[Component]:
     )
     return [
         DatabaseComponent(engine),
+        StartMarkerComponent(scope, started_at),
         http,
         ClosingComponent("ai_client", deepseek.close),
         BotPollingComponent(bot, dispatcher, setup_bot_commands),
         telegram,
         SchedulerComponent(scheduler, runner),
     ]
+
+
+class StartMarkerComponent:
+    """Записывает время старта процесса в heartbeat (для startup_grace_s в app.health)."""
+
+    name = "start_marker"
+
+    def __init__(
+        self,
+        scope: Callable[[], AbstractAsyncContextManager[AsyncSession]],
+        started_at: datetime,
+    ) -> None:
+        self._scope = scope
+        self._started_at = started_at
+
+    async def start(self) -> None:
+        """Сохраняет время старта; heartbeat ещё не было."""
+        async with self._scope() as session:
+            await SettingsRepository(session).set(
+                HEARTBEAT_SETTING, heartbeat_value(self._started_at, None)
+            )
+
+    async def stop(self) -> None:
+        """Ничего не делает: отметка старта не требует очистки."""
 
 
 class _Admins:
