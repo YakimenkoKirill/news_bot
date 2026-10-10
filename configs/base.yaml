@@ -76,3 +76,6 @@ publisher:
   min_interval_min: 10
   max_retries: 3
   quiet_hours: ["23:00", "07:00"]
+
+bot:
+  refusal_cooldown_s: 60

@@ -203,6 +203,14 @@ class PublisherConfig(BaseModel):
         return start, end
 
 
+class BotConfig(BaseModel):
+    """Секция bot: бот управления для администраторов."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    refusal_cooldown_s: float = Field(ge=0)
+
+
 class _YamlSource(PydanticBaseSettingsSource):
     """Источник настроек из уже слитых yaml-файлов, самый низкий приоритет."""
 
@@ -251,6 +259,7 @@ class Settings(BaseSettings):
     ai: AiConfig
     channel: ChannelProfile
     publisher: PublisherConfig
+    bot: BotConfig
 
     @field_validator("telegram_admin_ids", mode="before")
     @classmethod
