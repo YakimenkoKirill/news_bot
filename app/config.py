@@ -74,6 +74,8 @@ class CollectorsConfig(BaseModel):
     robots_ttl_h: float = Field(gt=0)
     min_article_chars: int = Field(ge=1)
     max_articles_per_run: int = Field(ge=1)
+    max_consecutive_errors: int = Field(ge=1)
+    stale_after_h: float = Field(gt=0)
 
 
 class _YamlSource(PydanticBaseSettingsSource):

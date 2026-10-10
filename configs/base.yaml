@@ -15,3 +15,5 @@ collectors:
   robots_ttl_h: 24
   min_article_chars: 200
   max_articles_per_run: 10
+  max_consecutive_errors: 5
+  stale_after_h: 6
