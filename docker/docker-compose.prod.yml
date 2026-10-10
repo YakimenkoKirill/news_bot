@@ -1,0 +1,44 @@
+name: news_bot
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: news-bot:latest
+    env_file: ../.env
+    # В .env на сервере DATABASE_URL указывает на сервис БД: ...@postgres:5432/<база>
+    environment:
+      ENV: prod
+      TELETHON_SESSION_PATH: /app/data/telethon
+    volumes:
+      - appdata:/app/data
+      - backups:/app/backups
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    # POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB — из того же .env
+    env_file: ../.env
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  appdata:
+  backups:
+  pgdata:
