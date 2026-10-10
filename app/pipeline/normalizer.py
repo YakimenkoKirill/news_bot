@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
 import html
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from fnmatch import fnmatchcase
+from typing import Protocol
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
+
+from app.config import NormalizeConfig
 
 HTML_PARSER = "lxml"
 PARAGRAPH = "\n\n"
@@ -38,6 +43,13 @@ DEFAULT_PORTS = {"http": 80, "https": 443}
 
 _PARAGRAPH_SPLIT = re.compile(r"\n\s*\n")
 _WHITESPACE = re.compile(r"\s+")
+_CYRILLIC = re.compile(r"[Ѐ-ӿ]")
+_LATIN = re.compile(r"[a-zA-Z]")
+_PUNCTUATION = re.compile(r"[^\w\s]|_")
+
+LANG_RU = "ru"
+LANG_EN = "en"
+LANG_UNKNOWN = "unknown"
 
 
 def clean_html(text: str) -> str:
@@ -115,3 +127,69 @@ def canonical_url(url: str, drop_query_params: Sequence[str]) -> str:
     ]
     query = urlencode(sorted(params), quote_via=quote)
     return urlunsplit((scheme, netloc, path, query, ""))
+
+
+def detect_language(text: str, lang_ratio: float) -> str:
+    """Определяет язык по доле кириллических и латинских букв.
+
+    Args:
+        text: Текст.
+        lang_ratio: Минимальная доля букв одного алфавита (normalize.lang_ratio).
+
+    Returns:
+        «ru», «en» или «unknown» (нет букв или ни один алфавит не набрал порог).
+    """
+    cyrillic = len(_CYRILLIC.findall(text))
+    latin = len(_LATIN.findall(text))
+    total = cyrillic + latin
+    if total == 0:
+        return LANG_UNKNOWN
+    if cyrillic / total >= lang_ratio:
+        return LANG_RU
+    if latin / total >= lang_ratio:
+        return LANG_EN
+    return LANG_UNKNOWN
+
+
+def content_hash(text: str) -> str:
+    """sha256 от текста без регистра, пунктуации и лишних пробелов, с ё -> е."""
+    normalized = text.lower().replace("ё", "е")
+    normalized = _WHITESPACE.sub(" ", _PUNCTUATION.sub(" ", normalized)).strip()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+class RawNewsFields(Protocol):
+    """Поля новости, нужные нормализации (NewsItem подходит структурно)."""
+
+    url: str
+    title: str
+    raw_text: str
+
+
+@dataclass(frozen=True)
+class NormalizedFields:
+    """Поля, которые заполняет нормализация."""
+
+    clean_text: str
+    canonical_url: str
+    language: str
+    content_hash: str
+
+
+def normalize_item(news: RawNewsFields, config: NormalizeConfig) -> NormalizedFields:
+    """Вычисляет нормализованные поля новости.
+
+    Хеш считается по заголовку и чистому тексту вместе, чтобы посты без текста
+    (только фото) не совпадали друг с другом.
+
+    Raises:
+        ValueError: У ссылки новости нет схемы или хоста.
+    """
+    text = clean_html(news.raw_text)
+    title = clean_html(news.title)
+    return NormalizedFields(
+        clean_text=text,
+        canonical_url=canonical_url(news.url, config.drop_query_params),
+        language=detect_language(f"{title}\n{text}", config.lang_ratio),
+        content_hash=content_hash(f"{title}\n{text}"),
+    )

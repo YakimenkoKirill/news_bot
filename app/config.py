@@ -100,6 +100,7 @@ class NormalizeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     drop_query_params: list[str]
+    lang_ratio: float = Field(gt=0, le=1)
 
 
 class _YamlSource(PydanticBaseSettingsSource):
