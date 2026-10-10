@@ -19,16 +19,19 @@ from app.alerts import AlertService
 from app.bot import BotDeps, create_bot, create_dispatcher
 from app.bot.handlers import keywords as keywords_handlers
 from app.bot.handlers import moderation as moderation_handlers
+from app.bot.handlers import queue as queue_handlers
 from app.bot.handlers import source_add as source_add_handlers
 from app.bot.handlers import sources as sources_handlers
 from app.bot.handlers import status as status_handlers
 from app.bot.handlers.common import setup_bot_commands
 from app.bot.handlers.keywords import KeywordsDeps
 from app.bot.handlers.moderation import ModerationDeps
+from app.bot.handlers.queue import QueueDeps
 from app.bot.handlers.source_add import SourceAddDeps
 from app.bot.handlers.sources import SourcesDeps
 from app.bot.handlers.status import StatusDeps
 from app.bot.moderation import BotReviewNotifier, ReviewNotifierDeps
+from app.bot.preview import PreviewDeps
 from app.collectors.base import BaseCollector
 from app.collectors.health import SourceHealthTracker
 from app.collectors.http import HttpClient
@@ -60,7 +63,7 @@ from app.pipeline.stage_ai import AiStageDeps, process_normalized_batch
 from app.pipeline.stage_normalize import NormalizeDeps, process_new_batch
 from app.publisher.media import ImageCheck, check_image
 from app.publisher.publisher import Publisher
-from app.publisher.stage_publish import PublishDeps, publish_due
+from app.publisher.stage_publish import ManualPublishDeps, PublishDeps, publish_due
 from app.scheduler import SchedulerDeps, build_scheduler
 
 log = structlog.get_logger(__name__)
@@ -257,6 +260,14 @@ def build_components(settings: Settings) -> list[Component]:
         channel_id=settings.telegram_channel_id,
         tz=tz,
     )
+    manual_deps = ManualPublishDeps(publish=publish_deps, news_repo=NewsRepository)
+    preview_deps = PreviewDeps(
+        session_scope=scope,
+        news_repo=NewsRepository,
+        source_repo=SourceRepository,
+        check_image=image_check,
+        cfg=settings.publisher,
+    )
     stale_tracker = SourceHealthTracker(_SessionSourceHealth(scope), alerts, settings.collectors)
 
     async def check_stale(now: datetime) -> int:
@@ -294,6 +305,7 @@ def build_components(settings: Settings) -> list[Component]:
                 source_add_handlers.create_router(),
                 keywords_handlers.create_router(),
                 moderation_handlers.create_router(),
+                queue_handlers.create_router(),
             ],
             workflow_data={
                 "status_deps": StatusDeps(
@@ -333,6 +345,22 @@ def build_components(settings: Settings) -> list[Component]:
                     source_repo=SourceRepository,
                     cfg=settings.publisher,
                     snooze_min=settings.moderation.snooze_min,
+                ),
+                "queue_deps": QueueDeps(
+                    session_scope=scope,
+                    news_repo=NewsRepository,
+                    post_repo=ProcessedPostRepository,
+                    publication_repo=PublicationRepository,
+                    settings_repo=SettingsRepository,
+                    source_repo=SourceRepository,
+                    preview=preview_deps,
+                    publisher_cfg=settings.publisher,
+                    channel_id=settings.telegram_channel_id,
+                    tz=tz,
+                    page_size=settings.bot.page_size,
+                    title_chars=settings.bot.queue_title_chars,
+                    clock=lambda: datetime.now(UTC),
+                    manual=manual_deps,
                 ),
             },
         )
