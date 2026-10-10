@@ -64,3 +64,9 @@ channel:
   max_title_chars: 90                              # длина заголовка поста
   max_summary_chars: 700                           # длина пересказа
   hashtags_max: 3                                  # сколько хэштегов максимум
+
+publisher:
+  # лимиты Bot API: подпись к медиа 1024, текст сообщения 4096 символов
+  caption_limit: 1024
+  text_limit: 4096
+  min_summary_chars: 200

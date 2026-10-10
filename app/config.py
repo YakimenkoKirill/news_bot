@@ -161,6 +161,16 @@ class ChannelProfile(BaseModel):
     hashtags_max: int = Field(ge=0)
 
 
+class PublisherConfig(BaseModel):
+    """Секция publisher: публикация в канал."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    caption_limit: int = Field(ge=1)
+    text_limit: int = Field(ge=1)
+    min_summary_chars: int = Field(ge=1)
+
+
 class _YamlSource(PydanticBaseSettingsSource):
     """Источник настроек из уже слитых yaml-файлов, самый низкий приоритет."""
 
@@ -208,6 +218,7 @@ class Settings(BaseSettings):
     pipeline: PipelineConfig
     ai: AiConfig
     channel: ChannelProfile
+    publisher: PublisherConfig
 
     @field_validator("telegram_admin_ids", mode="before")
     @classmethod
