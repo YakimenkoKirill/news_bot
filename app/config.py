@@ -220,6 +220,22 @@ class AlertsConfig(BaseModel):
     throttle_min: float = Field(ge=0)
 
 
+class SchedulerConfig(BaseModel):
+    """Секция scheduler: интервалы фоновых задач."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    collect_every_s: float = Field(gt=0)
+    normalize_every_s: float = Field(gt=0)
+    ai_every_s: float = Field(gt=0)
+    publish_every_s: float = Field(gt=0)
+    stale_every_min: float = Field(gt=0)
+    review_every_min: float = Field(gt=0)
+    heartbeat_every_s: float = Field(gt=0)
+    misfire_grace_s: int = Field(ge=1)
+    failures_before_alert: int = Field(ge=1)
+
+
 class BotConfig(BaseModel):
     """Секция bot: бот управления для администраторов."""
 
@@ -281,6 +297,7 @@ class Settings(BaseSettings):
     bot: BotConfig
     moderation: ModerationConfig
     alerts: AlertsConfig
+    scheduler: SchedulerConfig
 
     @field_validator("telegram_admin_ids", mode="before")
     @classmethod

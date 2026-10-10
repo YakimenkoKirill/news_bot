@@ -88,3 +88,14 @@ moderation:
 
 alerts:
   throttle_min: 30
+
+scheduler:
+  collect_every_s: 60
+  normalize_every_s: 30
+  ai_every_s: 30
+  publish_every_s: 30
+  stale_every_min: 30
+  review_every_min: 5
+  heartbeat_every_s: 60
+  misfire_grace_s: 60
+  failures_before_alert: 3

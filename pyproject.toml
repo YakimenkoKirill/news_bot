@@ -63,7 +63,16 @@ exclude = ["^prompts/"]
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["feedparser", "feedparser.*", "telethon", "telethon.*", "simhash", "simhash.*"]
+module = [
+    "feedparser",
+    "feedparser.*",
+    "telethon",
+    "telethon.*",
+    "simhash",
+    "simhash.*",
+    "apscheduler",
+    "apscheduler.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
