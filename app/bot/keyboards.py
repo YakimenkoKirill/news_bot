@@ -184,6 +184,9 @@ class QueueActionType(StrEnum):
     PAGE = "page"
     OPEN = "open"
     BACK = "back"
+    PUBLISH = "publish"
+    CONFIRM = "confirm"
+    CANCEL = "cancel"
 
 
 class QueueAction(CallbackData, prefix="q"):
@@ -248,10 +251,36 @@ def queue_keyboard(
 
 
 def queue_item_keyboard(news_id: int, tab: QueueTab, page: int) -> InlineKeyboardMarkup:
-    """Кнопки под предпросмотром поста из /queue."""
+    """Кнопки под предпросмотром поста из /queue: «Опубликовать сейчас» и «К списку»."""
     builder = InlineKeyboardBuilder()
+    builder.button(
+        text="🚀 Опубликовать сейчас",
+        callback_data=QueueAction(
+            action=QueueActionType.PUBLISH, tab=tab, page=page, news_id=news_id
+        ),
+    )
     builder.button(
         text="◀️ К списку",
         callback_data=QueueAction(action=QueueActionType.BACK, tab=tab, page=page, news_id=news_id),
     )
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def queue_confirm_keyboard(news_id: int, tab: QueueTab, page: int) -> InlineKeyboardMarkup:
+    """Подтверждение публикации поста вне очереди."""
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="✅ Да, опубликовать",
+        callback_data=QueueAction(
+            action=QueueActionType.CONFIRM, tab=tab, page=page, news_id=news_id
+        ),
+    )
+    builder.button(
+        text="Отмена",
+        callback_data=QueueAction(
+            action=QueueActionType.CANCEL, tab=tab, page=page, news_id=news_id
+        ),
+    )
+    builder.adjust(2)
     return builder.as_markup()

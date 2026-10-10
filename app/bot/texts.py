@@ -140,3 +140,15 @@ def review_line(number: int, title: str, source: str, score: float, has_note: bo
     """Строка вкладки «На модерации»; ⚠️ — у поста есть замечание проверки фактов."""
     warning = QUEUE_REVIEW_WARNING if has_note else ""
     return f"{number}. {title} — {source} · ★{score:.2f}{warning}"
+
+
+QUEUE_CONFIRM = (
+    "Опубликовать сейчас, вне очереди? Интервал между постами и тихие часы не учитываются."
+)
+QUEUE_CONFIRM_PAUSED = "Пайплайн на паузе — пост всё равно выйдет."
+QUEUE_PUBLISHING = "Публикую…"
+QUEUE_PUBLISHED = "🚀 Опубликовано вне очереди"
+QUEUE_PUBLISH_BUSY = "Пост сейчас публикуется — обновите список"
+QUEUE_PUBLISH_DONE = "Уже обработано: {status}"
+QUEUE_PUBLISH_NOT_FOUND = "Пост не найден"
+QUEUE_PUBLISH_FAILED = "❌ Не удалось опубликовать: {error}"

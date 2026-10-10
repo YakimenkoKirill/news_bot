@@ -22,17 +22,24 @@ from app.bot.keyboards import (
     QueueAction,
     QueueActionType,
     QueueTab,
+    queue_confirm_keyboard,
     queue_item_keyboard,
     queue_keyboard,
 )
 from app.bot.moderation import REVIEW_NOTE_PREFIX
-from app.bot.preview import PreviewDeps, build_preview, send_preview
+from app.bot.preview import PreviewDeps, build_preview, mark_message, send_preview
 from app.config import PublisherConfig
 from app.db.models import NewsItem, ProcessedPost
 from app.domain.enums import NewsStatus
 from app.pipeline.ai.prompts import truncate_words
 from app.publisher.slots import queue_eta
-from app.publisher.stage_publish import PAUSED_SETTING
+from app.publisher.stage_publish import (
+    PAUSED_SETTING,
+    ManualOutcome,
+    ManualPublishDeps,
+    ManualPublishResult,
+    publish_now,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -119,6 +126,7 @@ class QueueDeps:
         page_size: Постов на странице (bot.page_size).
         title_chars: Длина заголовка в списке (bot.queue_title_chars).
         clock: Текущее время.
+        manual: Зависимости публикации вне очереди (publish_now).
     """
 
     session_scope: Callable[[], AbstractAsyncContextManager[Any]]
@@ -134,6 +142,7 @@ class QueueDeps:
     page_size: int
     title_chars: int
     clock: Callable[[], datetime]
+    manual: ManualPublishDeps
 
 
 def _zone(tz: str | ZoneInfo) -> ZoneInfo:
@@ -234,7 +243,16 @@ async def on_queue_action(
         await callback.message.answer(text, reply_markup=keyboard)
         await callback.answer()
         return
-    await _open(callback, callback_data, deps, bot)
+    if callback_data.action is QueueActionType.OPEN:
+        await _open(callback, callback_data, deps, bot)
+    elif callback_data.action is QueueActionType.PUBLISH:
+        await _ask_confirm(callback, callback_data, deps)
+    elif callback_data.action is QueueActionType.CANCEL:
+        keyboard = queue_item_keyboard(callback_data.news_id, tab, page)
+        await callback.message.edit_reply_markup(reply_markup=keyboard)
+        await callback.answer()
+    elif callback_data.action is QueueActionType.CONFIRM:
+        await _confirm(callback, callback_data, deps)
 
 
 async def _open(callback: Any, data: QueueAction, deps: QueueDeps, bot: Any) -> None:
@@ -259,10 +277,56 @@ async def _open(callback: Any, data: QueueAction, deps: QueueDeps, bot: Any) -> 
     await callback.answer()
 
 
+def _who(callback: Any) -> tuple[int | None, str]:
+    user = getattr(callback, "from_user", None)
+    if user is None:
+        return None, "неизвестно"
+    name = f"@{user.username}" if getattr(user, "username", None) else str(user.id)
+    return user.id, name
+
+
+async def _ask_confirm(callback: Any, data: QueueAction, deps: QueueDeps) -> None:
+    async with deps.session_scope() as session:
+        paused = bool(await deps.settings_repo(session).get(PAUSED_SETTING, False))
+    hint = f"{texts.QUEUE_CONFIRM} {texts.QUEUE_CONFIRM_PAUSED}" if paused else texts.QUEUE_CONFIRM
+    keyboard = queue_confirm_keyboard(data.news_id, data.tab, data.page)
+    await callback.message.edit_reply_markup(reply_markup=keyboard)
+    await callback.answer(hint, show_alert=True)
+
+
+async def _confirm(callback: Any, data: QueueAction, deps: QueueDeps) -> None:
+    """Публикует пост вне очереди после подтверждения.
+
+    Сначала отвечает на callback: у Telegram ограничено время на ответ, а
+    публикация с проверкой картинки и повторами может идти дольше.
+    """
+    await callback.answer(texts.QUEUE_PUBLISHING)
+    user_id, who = _who(callback)
+    result = await publish_now(data.news_id, deps.clock(), deps.manual, initiator_id=user_id or 0)
+    log.info(
+        "queue.publish_now", news_id=data.news_id, user_id=user_id, outcome=result.outcome.value
+    )
+    if result.outcome is ManualOutcome.BUSY:
+        await callback.message.answer(texts.QUEUE_PUBLISH_BUSY)
+        return
+    await mark_message(callback, _decision(result), who)
+
+
+def _decision(result: ManualPublishResult) -> str:
+    if result.outcome is ManualOutcome.PUBLISHED:
+        return texts.QUEUE_PUBLISHED
+    if result.outcome is ManualOutcome.FAILED:
+        return texts.QUEUE_PUBLISH_FAILED.format(error=result.error or "")
+    if result.outcome is ManualOutcome.ALREADY_DONE:
+        status = result.status.value if result.status is not None else ""
+        return texts.QUEUE_PUBLISH_DONE.format(status=status)
+    return texts.QUEUE_PUBLISH_NOT_FOUND
+
+
 def create_router() -> Router:
     """Роутер команды /queue."""
     router = Router(name="queue")
     router.message.register(cmd_queue, Command("queue"))
-    actions = {QueueActionType.PAGE, QueueActionType.OPEN, QueueActionType.BACK}
+    actions = set(QueueActionType)
     router.callback_query.register(on_queue_action, QueueAction.filter(F.action.in_(actions)))
     return router

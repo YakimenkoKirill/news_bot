@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from aiogram.methods import AnswerCallbackQuery, EditMessageText, SendMessage, SendPhoto
@@ -19,6 +20,7 @@ from app.config import PublisherConfig, Settings
 from app.db.models import NewsItem, ProcessedPost, Source
 from app.domain.enums import NewsStatus, SourceType
 from app.publisher.media import ImageCheck
+from app.publisher.stage_publish import ManualPublishDeps
 from tests.bot_helpers import FakeSession, callback_update, make_bot, message_update
 from tests.config_helpers import base_section, bot_config
 
@@ -176,6 +178,7 @@ def _deps(db: Db, now: datetime = NOW) -> QueueDeps:
         page_size=PAGE_SIZE,
         title_chars=bot_config().queue_title_chars,
         clock=lambda: now,
+        manual=ManualPublishDeps(publish=MagicMock(), news_repo=MagicMock()),
     )
 
 
@@ -371,7 +374,9 @@ async def test_open_sends_preview_with_back_button() -> None:
     assert photo.photo == "https://cdn.example/a.jpg"
     assert "<b>Заголовок 2</b>" in (photo.caption or "")
     assert isinstance(photo.reply_markup, InlineKeyboardMarkup)
-    [(label, action)] = _buttons(photo.reply_markup)
+    [(publish_label, publish), (label, action)] = _buttons(photo.reply_markup)
+    assert publish_label == "🚀 Опубликовать сейчас"
+    assert (publish.action, publish.news_id, publish.tab) == ("publish", 2, QueueTab.QUEUE)
     assert label == "◀️ К списку"
     assert (action.action, action.news_id, action.tab) == ("back", 2, QueueTab.QUEUE)
 
@@ -433,5 +438,6 @@ def test_real_components_fit_protocols() -> None:
         page_size=PAGE_SIZE,
         title_chars=bot_config().queue_title_chars,
         clock=base.clock,
+        manual=ManualPublishDeps(publish=MagicMock(), news_repo=NewsRepository),
     )
     assert deps.page_size == PAGE_SIZE
