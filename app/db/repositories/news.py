@@ -6,14 +6,40 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any, Protocol
 
-from sqlalchemy import BigInteger, func, select
+from sqlalchemy import BigInteger, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import NewsItem
+from app.domain.enums import NewsStatus
+from app.domain.status import ensure_transition
 
 TG_MESSAGE_ID_KEY = "msg_id"
 _DIGITS_RE = r"^[0-9]+$"
+
+UPDATABLE_FIELDS = frozenset(
+    {
+        "canonical_url",
+        "title",
+        "clean_text",
+        "image_url",
+        "language",
+        "published_at",
+        "content_hash",
+        "simhash",
+        "cluster_id",
+        "raw_meta",
+    }
+)
+
+
+class StaleStatusError(RuntimeError):
+    """Статус новости уже не совпадает с ожидаемым (её изменил кто-то другой)."""
+
+    def __init__(self, news_id: int, expected: NewsStatus) -> None:
+        self.news_id = news_id
+        self.expected = expected
+        super().__init__(f"новость {news_id} уже не в статусе {expected.value}")
 
 
 class RawNews(Protocol):
@@ -130,3 +156,83 @@ class NewsRepository:
             NewsItem.source_id == source_id, msg_id.regexp_match(_DIGITS_RE)
         )
         return await self._session.scalar(stmt)
+
+    async def set_status(
+        self,
+        news_id: int,
+        expected: NewsStatus,
+        new: NewsStatus,
+        reason: str | None = None,
+    ) -> None:
+        """Переводит новость из expected в new.
+
+        Переход проверяется машиной состояний, а UPDATE выполняется только при
+        status = expected (оптимистическая блокировка).
+
+        Args:
+            news_id: Id новости.
+            expected: Статус, в котором новость должна находиться сейчас.
+            new: Новый статус.
+            reason: Причина отказа (reject_reason); None не меняет сохранённую причину.
+
+        Raises:
+            InvalidTransition: Переход expected -> new запрещён.
+            StaleStatusError: Новости нет или её статус уже не expected.
+        """
+        ensure_transition(expected, new)
+        values: dict[str, Any] = {"status": new}
+        if reason is not None:
+            values["reject_reason"] = reason
+        stmt = (
+            update(NewsItem)
+            .where(NewsItem.id == news_id, NewsItem.status == expected)
+            .values(**values)
+            .returning(NewsItem.id)
+        )
+        if (await self._session.execute(stmt)).scalar_one_or_none() is None:
+            raise StaleStatusError(news_id, expected)
+
+    async def claim_batch(self, status: NewsStatus, limit: int) -> list[NewsItem]:
+        """Захватывает до limit самых старых новостей в статусе status.
+
+        Использует SELECT ... FOR UPDATE SKIP LOCKED: строки остаются заблокированными
+        до конца транзакции вызывающего, параллельные обработчики получают другие строки.
+
+        Raises:
+            ValueError: limit <= 0.
+        """
+        if limit <= 0:
+            raise ValueError(f"limit должен быть положительным, получено {limit}")
+        stmt = (
+            select(NewsItem)
+            .where(NewsItem.status == status)
+            .order_by(NewsItem.created_at, NewsItem.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+            .execution_options(populate_existing=True)
+        )
+        return list((await self._session.scalars(stmt)).all())
+
+    async def update_fields(self, news_id: int, **fields: Any) -> bool:
+        """Обновляет поля, заполняемые нормализацией и дедупликацией.
+
+        Статус так не меняется — только через set_status.
+
+        Raises:
+            ValueError: Поле не входит в UPDATABLE_FIELDS или полей нет.
+        """
+        unknown = set(fields) - UPDATABLE_FIELDS
+        if unknown or not fields:
+            raise ValueError(f"нельзя обновить поля: {sorted(unknown) or 'пустой набор'}")
+        stmt = (
+            update(NewsItem).where(NewsItem.id == news_id).values(**fields).returning(NewsItem.id)
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none() is not None
+
+    async def count_by_status(self) -> dict[NewsStatus, int]:
+        """Возвращает число новостей в каждом статусе, включая нулевые."""
+        stmt = select(NewsItem.status, func.count()).group_by(NewsItem.status)
+        counts = {status: 0 for status in NewsStatus}
+        for status, count in (await self._session.execute(stmt)).all():
+            counts[NewsStatus(status)] = count
+        return counts
