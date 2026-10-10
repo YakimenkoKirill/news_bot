@@ -94,6 +94,14 @@ class TelegramConfig(BaseModel):
     catch_up_limit: int = Field(ge=1)
 
 
+class NormalizeConfig(BaseModel):
+    """Секция normalize: нормализация текста и URL."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    drop_query_params: list[str]
+
+
 class _YamlSource(PydanticBaseSettingsSource):
     """Источник настроек из уже слитых yaml-файлов, самый низкий приоритет."""
 
@@ -135,6 +143,7 @@ class Settings(BaseSettings):
     db: DbConfig
     collectors: CollectorsConfig
     telegram: TelegramConfig
+    normalize: NormalizeConfig
 
     @field_validator("telegram_admin_ids", mode="before")
     @classmethod

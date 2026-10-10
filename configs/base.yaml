@@ -28,3 +28,6 @@ telegram:
   ad_markers: ["#реклама", "erid"]
   skip_forwards: true
   catch_up_limit: 100
+
+normalize:
+  drop_query_params: ["utm_*", "fbclid", "gclid", "yclid"]
