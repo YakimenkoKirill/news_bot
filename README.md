@@ -1,17 +1,174 @@
 # news_bot
 
-Бот собирает новости из RSS-лент, сайтов и открытых Telegram-каналов, пересказывает их через DeepSeek и публикует пересказ в Telegram-канал со ссылкой на источник.
+Бот собирает новости из RSS-лент, сайтов без RSS и открытых Telegram-каналов, отсеивает дубли и неподходящие материалы, пересказывает их через DeepSeek и публикует пересказ в Telegram-канал со ссылкой на источник. Управление источниками, ключевыми словами и модерацией — через отдельного бота для администраторов.
 
-## Быстрый старт
+Как устроен пайплайн:
 
-Нужен Python 3.11+.
-
-```bash
-make install
-make lint
-make test
+```
+сбор (RSS, сайты, Telegram) -> нормализация, фильтры, дедупликация -> пересказ DeepSeek
+    -> модерация (по желанию) -> публикация в канал по расписанию
 ```
 
-## Для разработчиков
+Каждая стадия меняет статус новости в БД (`new -> normalized -> processed -> approved -> published` и ветки `duplicate`, `filtered`, `pending_review`, `rejected`, `failed`). Правила для разработчиков и ИИ-исполнителей — в [CLAUDE.md](.claude/CLAUDE.md).
 
-Правила проекта, инварианты и команды описаны в [CLAUDE.md](.claude/CLAUDE.md). Шаги разработки лежат в каталоге [prompts/](prompts/README.md).
+## Требования
+
+- Python 3.11+ и `make`;
+- Docker и Docker Compose v2 (PostgreSQL 16 для разработки и боевой запуск);
+- бот Telegram (токен у [@BotFather](https://t.me/BotFather)), добавленный администратором канала с правом публикации;
+- `api_id` и `api_hash` приложения Telegram с [my.telegram.org](https://my.telegram.org) — для чтения каналов-источников;
+- ключ API DeepSeek или совместимого с OpenAI сервиса.
+
+## Установка и запуск локально
+
+```bash
+make install                  # .venv и зависимости
+cp .env.example .env          # заполните значения, см. таблицу ниже
+make db-up                    # PostgreSQL 16 в Docker (+ БД для тестов)
+make migrate                  # схема БД
+.venv/bin/python scripts/telethon_login.py   # разовый вход Telethon, см. ниже
+.venv/bin/python -m app       # запуск; остановка — Ctrl+C или SIGTERM
+```
+
+Проверки: `make lint`, `make test` (unit), `make test-integration` (нужны `make db-up` и `TEST_DATABASE_URL`), `make coverage`.
+
+Если порт 5432 занят другим PostgreSQL, задайте в `.env` `POSTGRES_PORT=5433` и этот же порт в `DATABASE_URL` и `TEST_DATABASE_URL`.
+
+## Переменные окружения
+
+Задаются в `.env` (образец — `.env.example`). Секреты хранятся как `SecretStr` и не попадают в логи.
+
+| Переменная | Обязательна | Описание |
+| --- | --- | --- |
+| `ENV` | нет (`dev`) | окружение: `dev` или `prod`; выбирает `configs/{ENV}.yaml` поверх `configs/base.yaml` |
+| `DATABASE_URL` | да | адрес PostgreSQL, драйвер asyncpg: `postgresql+asyncpg://user:pass@host:port/db` |
+| `TELEGRAM_BOT_TOKEN` | да | токен бота от @BotFather |
+| `TELEGRAM_CHANNEL_ID` | да | числовой id канала для публикации, вида `-100…` |
+| `TELEGRAM_ADMIN_IDS` | да | Telegram ID администраторов бота через запятую |
+| `TELETHON_API_ID` | да | api_id с my.telegram.org |
+| `TELETHON_API_HASH` | да | api_hash с my.telegram.org |
+| `TELETHON_SESSION_PATH` | нет (`data/telethon`) | путь к файлу сессии Telethon без расширения `.session` |
+| `DEEPSEEK_API_KEY` | да | ключ API модели |
+| `DEEPSEEK_BASE_URL` | нет (`https://api.deepseek.com`) | адрес OpenAI-совместимого API |
+| `LOG_LEVEL` | нет (`INFO`) | уровень логов: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
+| `TEST_DATABASE_URL` | для интеграционных тестов | отдельная БД для `make test-integration`; без неё эти тесты пропускаются |
+| `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_TEST_DB`, `POSTGRES_PORT` | для `make db-up` и боевого compose | параметры контейнера PostgreSQL |
+
+Любой параметр из yaml можно переопределить переменной с двойным подчёркиванием, например `APP__TIMEZONE=Europe/Moscow` или `AI__DAILY_BUDGET=1.5`.
+
+Как узнать id канала: добавьте бота в канал администратором, опубликуйте в канале сообщение и откройте `https://api.telegram.org/bot<токен>/getUpdates` — в ответе будет `"chat":{"id":-100…`.
+
+## Справочник configs/base.yaml
+
+Все пороги и параметры живут в `configs/base.yaml`; `configs/dev.yaml` и `configs/prod.yaml` переопределяют отдельные ключи. Неизвестный ключ — ошибка при запуске.
+
+| Секция | Что настраивает |
+| --- | --- |
+| `app` | `timezone` — часовой пояс канала (IANA): сутки бюджета, тихие часы, отчёты |
+| `db` | пул соединений: `pool_size`, `max_overflow`, `pool_pre_ping`, `echo` (SQL в логах) |
+| `collectors` | сбор: `user_agent` (имя бота и контакт), таймаут и повторы HTTP, лимит запросов на домен `per_domain_rps`, кэш robots.txt, минимальная длина статьи, статей за проход, порог ошибок источника `max_consecutive_errors`, «молчание» источника `stale_after_h`, параллельность, минимальный интервал опроса для новых источников |
+| `telegram` | Telethon: ожидание FloodWait (`flood_wait_*`), длина заголовка из первой строки поста, ожидание частей альбома, маркеры рекламы `ad_markers`, отсев репостов `skip_forwards`, сколько сообщений догружать после перезапуска |
+| `normalize` | удаляемые из URL параметры (`utm_*` и др.), порог доли букв для определения языка |
+| `filters` | максимальный возраст новости `max_age_h` и допустимые языки `allowed_languages` |
+| `dedup` | SimHash: длина учитываемого начала текста, окно поиска дублей `window_h`, порог расстояния `simhash_max_distance` (подбирается `scripts/eval_dedup.py`) |
+| `pipeline` | размер пачки новостей для стадий `batch_size` |
+| `ai` | модель, temperature, таймаут, параллельность и повторы, длина текста для модели, цены за 1 млн токенов, дневной бюджет в $ `daily_budget`, минимальная оценка интереса `min_score` |
+| `channel` | профиль канала для промпта: тематика, язык, тон, лимиты длины заголовка и пересказа, число хэштегов |
+| `publisher` | лимиты Telegram (подпись 1024, текст 4096), минимальный пересказ рядом с фото, допустимые картинки, интервал между постами `min_interval_min`, повторы при RetryAfter, тихие часы `quiet_hours` (например `["23:00", "07:00"]` или `[]`) |
+| `bot` | бот управления: пауза между отказами посторонним, источников на странице, максимальная длина ключевого слова |
+| `moderation` | на сколько минут откладывает кнопка «Позже» |
+| `alerts` | не чаще какого интервала повторять одинаковый алерт |
+| `scheduler` | интервалы фоновых задач, `misfire_grace_s`, после скольких ошибок задачи подряд слать алерт |
+| `metrics` | цели MVP для `scripts/run_report.py` |
+| `health` | проверка живости: возраст heartbeat, таймаут БД, льготное время после старта |
+| `backup` | каталог бэкапов `dir` и срок хранения `keep_days` |
+
+## Первый вход Telethon
+
+Telethon читает каналы-источники от имени вашего аккаунта Telegram. Вход делается один раз и сохраняет файл сессии `TELETHON_SESSION_PATH.session`:
+
+```bash
+.venv/bin/python scripts/telethon_login.py
+```
+
+Скрипт спросит номер телефона, код из Telegram и пароль 2FA. Файл сессии даёт полный доступ к аккаунту: не коммитьте его (каталог `data/` в `.gitignore`) и храните как секрет. Без сессии приложение не стартует и пишет, что нужно выполнить этот скрипт. Читаются только публичные каналы с username.
+
+## Работа с ботом управления
+
+Пишут боту только администраторы (`TELEGRAM_ADMIN_IDS` и таблица `admins`), остальные получают отказ.
+
+| Команда | Что делает |
+| --- | --- |
+| `/start`, `/help` | приветствие, меню и список команд |
+| `/status` | новости по статусам, проблемные источники, расход DeepSeek за сутки и бюджет, пауза, время последней публикации |
+| `/pause`, `/resume` | остановить и возобновить обработку моделью и публикацию (сбор продолжается) |
+| `/sources` | список источников; кнопки «вкл/выкл», «удалить» (с подтверждением), «проверить» (пробный сбор) |
+| `/add_source` | диалог добавления: тип (rss, web, tg) -> адрес -> имя -> интервал -> режим модерации -> для сайтов CSS-селекторы JSON -> «Пробный сбор» или «Сохранить» |
+| `/keywords` | ключевые слова (новость должна содержать хотя бы одно) и стоп-слова; добавление через запятую, удаление кнопками |
+| `/cancel` | выйти из текущего диалога |
+
+Селекторы для сайта без RSS: `{"list_item": "article.news", "link": "a", "title": "h2"}` — `list_item` выделяет карточку статьи на странице-списке, `link` — ссылку в ней, `title` — заголовок (необязательно).
+
+**Модерация.** У источника с режимом `review`, а также у любого поста, где проверка нашла цифры или имена, которых нет в источнике, пост сначала приходит администраторам в том виде, в каком выйдет в канал. Кнопки: «Опубликовать» (в очередь публикации), «Изменить» (прислать новый текст пересказа), «Отклонить», «Позже» (повторно придёт через `moderation.snooze_min`). Решение одного админа видно остальным: повторное нажатие ответит «Уже обработано».
+
+## Как обновить промпт
+
+Промпт пересказа — в `app/pipeline/ai/prompts.py`. После изменения текста повысьте `PROMPT_VERSION` (например `v1` -> `v2`): версия сохраняется в `processed_posts.prompt_version`, и по ней видно, какие посты сделаны каким промптом. Профиль канала (тема, тон, лимиты) меняется в секции `channel` без правки кода.
+
+## Деплой
+
+На сервере нужны Docker и Docker Compose. В `.env` на сервере `DATABASE_URL` указывает на сервис БД внутри compose:
+
+```
+DATABASE_URL=postgresql+asyncpg://news:<пароль>@postgres:5432/news
+POSTGRES_USER=news
+POSTGRES_PASSWORD=<пароль>
+POSTGRES_DB=news
+```
+
+```bash
+make docker-build
+docker compose -f docker/docker-compose.prod.yml run --rm app python scripts/telethon_login.py
+docker compose -f docker/docker-compose.prod.yml up -d
+docker compose -f docker/docker-compose.prod.yml logs -f app
+```
+
+При каждом старте контейнер применяет миграции (`alembic upgrade head`, идемпотентно); ошибка миграции останавливает его с ненулевым кодом. PostgreSQL наружу не публикуется. Сессия Telethon и бэкапы лежат в томах `appdata` и `backups`. Healthcheck контейнера — `python -m app.health`: БД отвечает и планировщик пишет heartbeat.
+
+## Бэкапы
+
+`scripts/backup.py` делает дамп БД (`pg_dump -Fc`, нужен клиент PostgreSQL версии не ниже сервера) и копию файла сессии Telethon в `backup.dir` и удаляет бэкапы старше `backup.keep_days`. Пароль передаётся pg_dump через `PGPASSWORD`, а не аргументом. Запуск там, где БД доступна напрямую, раз в сутки через cron:
+
+```
+0 3 * * * cd /opt/news_bot && .venv/bin/python scripts/backup.py >> logs/backup.log 2>&1
+```
+
+В боевом compose БД не опубликована наружу, а в образе приложения нет pg_dump, поэтому на сервере делайте дамп через контейнер БД:
+
+```
+0 3 * * * cd /opt/news_bot && docker compose -f docker/docker-compose.prod.yml exec -T postgres sh -c 'pg_dump -Fc -U "$POSTGRES_USER" "$POSTGRES_DB"' > backups/db_$(date -u +\%Y\%m\%dT\%H\%M\%SZ).dump
+```
+
+Восстановление: `pg_restore --clean -d <база> <файл.dump>`.
+
+## Отчёт по тестовому прогону
+
+```bash
+.venv/bin/python scripts/run_report.py --from 2026-10-10 --to 2026-10-14
+```
+
+Печатает число публикаций, медиану и p95 задержки от публикации в источнике до канала, долю отклонённых модератором, пойманные дубли по уровням, долю дублей в канале, расход DeepSeek по дням, ошибки источников и таблицу ok/fail по целям из секции `metrics`. Даты — включительно, в часовом поясе `app.timezone`.
+
+Порог SimHash подбирается на размеченном вручную наборе (около 200 новостей, JSONL с полями `id`, `title`, `text`, `cluster`): `.venv/bin/python scripts/eval_dedup.py <файл.jsonl>`; рекомендованное значение впишите в `dedup.simhash_max_distance`.
+
+## Частые проблемы
+
+**FloodWait от Telegram.** Telethon просит подождать перед следующим запросом. Бот ждёт сам (`telegram.flood_wait_*`); если ожидание длиннее `flood_wait_max_s`, канал получает ошибку и опрашивается позже. Частые FloodWait — признак слишком большого числа каналов или частых перезапусков: уменьшите `catch_up_limit`.
+
+**Сломался парсер сайта.** Сайт сменил вёрстку — `/sources` -> «проверить» показывает 0 материалов или ошибку, после `collectors.max_consecutive_errors` ошибок подряд приходит алерт «Источник не отвечает». Откройте страницу-список, подберите новые CSS-селекторы и пересоздайте источник через `/add_source` (старый удалите в `/sources`). Сайты, запрещающие обход в robots.txt, не собираются.
+
+**Превышен бюджет DeepSeek.** При достижении `ai.daily_budget` приходит алерт, обработка моделью останавливается до следующих суток по `app.timezone`, новости ждут в статусе `normalized` и обработаются потом. Поднимите бюджет в `configs/base.yaml` (или `AI__DAILY_BUDGET`) и перезапустите приложение.
+
+**Модель недоступна или отклоняет запросы.** Приходит алерт `ai_down`: проверьте ключ, баланс и `DEEPSEEK_BASE_URL`. Новости остаются `normalized` и обработаются после восстановления.
+
+**Посты не выходят.** Проверьте `/status`: пауза, тихие часы (`publisher.quiet_hours`), интервал между постами, права бота в канале. Ошибка публикации приходит алертом `publish_error`.
