@@ -91,6 +91,7 @@ class TelegramConfig(BaseModel):
     album_wait_s: float = Field(gt=0)
     ad_markers: list[str]
     skip_forwards: bool
+    catch_up_limit: int = Field(ge=1)
 
 
 class _YamlSource(PydanticBaseSettingsSource):

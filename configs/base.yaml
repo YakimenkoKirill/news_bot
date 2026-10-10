@@ -27,3 +27,4 @@ telegram:
   album_wait_s: 2
   ad_markers: ["#реклама", "erid"]
   skip_forwards: true
+  catch_up_limit: 100
