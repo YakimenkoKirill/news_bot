@@ -19,3 +19,9 @@ class AddKeywords(StatesGroup):
     """Диалог добавления ключевых или стоп-слов."""
 
     words = State()
+
+
+class EditPost(StatesGroup):
+    """Редактирование пересказа поста на модерации."""
+
+    summary = State()

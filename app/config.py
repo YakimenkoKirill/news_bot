@@ -204,6 +204,14 @@ class PublisherConfig(BaseModel):
         return start, end
 
 
+class ModerationConfig(BaseModel):
+    """Секция moderation: модерация постов администраторами."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    snooze_min: float = Field(gt=0)
+
+
 class BotConfig(BaseModel):
     """Секция bot: бот управления для администраторов."""
 
@@ -263,6 +271,7 @@ class Settings(BaseSettings):
     channel: ChannelProfile
     publisher: PublisherConfig
     bot: BotConfig
+    moderation: ModerationConfig
 
     @field_validator("telegram_admin_ids", mode="before")
     @classmethod

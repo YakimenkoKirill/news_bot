@@ -77,7 +77,8 @@ def shorten_summary(summary: str, limit: int) -> str:
     return word_prefix.rstrip(" ,;:—-") + ELLIPSIS
 
 
-def _summary_budget(post: Post, limit: int) -> int:
+def summary_budget(post: Post, limit: int) -> int:
+    """Сколько единиц UTF-16 остаётся пересказу при данном лимите поста."""
     overhead = visible_length(post.with_summary(_PROBE).html) - utf16_len(_PROBE)
     return limit - overhead
 
@@ -85,7 +86,7 @@ def _summary_budget(post: Post, limit: int) -> int:
 def _fit_to(post: Post, limit: int) -> str:
     if visible_length(post.html) <= limit:
         return post.html
-    return post.with_summary(shorten_summary(post.summary, _summary_budget(post, limit))).html
+    return post.with_summary(shorten_summary(post.summary, summary_budget(post, limit))).html
 
 
 def fit_post(post: Post, has_photo: bool, cfg: PublisherConfig) -> FittedPost:
@@ -105,7 +106,7 @@ def fit_post(post: Post, has_photo: bool, cfg: PublisherConfig) -> FittedPost:
     """
     if has_photo:
         fits_whole = visible_length(post.html) <= cfg.caption_limit
-        budget = _summary_budget(post, cfg.caption_limit)
+        budget = summary_budget(post, cfg.caption_limit)
         if fits_whole or budget >= min(cfg.min_summary_chars, utf16_len(post.summary)):
             return FittedPost(html=_fit_to(post, cfg.caption_limit), use_photo=True)
     return FittedPost(html=_fit_to(post, cfg.text_limit), use_photo=False)

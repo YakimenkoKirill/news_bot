@@ -82,3 +82,16 @@ KW_EMPTY_INPUT = "Не нашёл ни одного слова. Пришлите
 KW_ALREADY_DELETED = "Это слово уже удалено."
 KW_DELETED = "Слово удалено."
 KW_TYPE_LABELS = {"include": "Ключевые", "exclude": "Стоп-слова"}
+
+REVIEW_POST_NOT_FOUND = "Пост не найден."
+REVIEW_ALREADY_DONE = "Уже обработано: {status}"
+REVIEW_ASK_SUMMARY = "Пришлите новый текст пересказа (не длиннее {limit} символов)."
+REVIEW_SUMMARY_TOO_LONG = "Текст длиннее {limit} символов. Сократите и пришлите ещё раз."
+REVIEW_SUMMARY_EMPTY = "Текст пустой. Пришлите новый пересказ."
+REVIEW_EDITED = "Пересказ обновлён, пост одобрен к публикации."
+REVIEW_DECISIONS = {
+    "publish": "✅ Одобрено к публикации",
+    "reject": "🚫 Отклонено",
+    "later": "⏰ Отложено на {minutes} мин",
+    "edit": "✏️ Отредактировано и одобрено",
+}
