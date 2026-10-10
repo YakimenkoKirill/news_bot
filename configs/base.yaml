@@ -52,6 +52,7 @@ ai:
   timeout_s: 60
   max_concurrency: 3
   max_retries: 3
+  max_input_chars: 6000
 
 channel:
   topic: "технологии и искусственный интеллект"   # тематика канала

@@ -140,6 +140,20 @@ class AiConfig(BaseModel):
     timeout_s: float = Field(gt=0)
     max_concurrency: int = Field(ge=1)
     max_retries: int = Field(ge=0)
+    max_input_chars: int = Field(ge=1)
+
+
+class ChannelProfile(BaseModel):
+    """Секция channel: профиль канала для промпта и проверки ответа модели."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    topic: str = Field(min_length=1)
+    language: str = Field(min_length=1)
+    tone: str = Field(min_length=1)
+    max_title_chars: int = Field(ge=1)
+    max_summary_chars: int = Field(ge=1)
+    hashtags_max: int = Field(ge=0)
 
 
 class _YamlSource(PydanticBaseSettingsSource):
@@ -188,6 +202,7 @@ class Settings(BaseSettings):
     dedup: DedupConfig
     pipeline: PipelineConfig
     ai: AiConfig
+    channel: ChannelProfile
 
     @field_validator("telegram_admin_ids", mode="before")
     @classmethod
