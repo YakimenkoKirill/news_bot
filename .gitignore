@@ -30,6 +30,7 @@ htmlcov/
 *.parquet
 *.joblib
 data/
+backups/
 
 # Python & байткод
 __pycache__/

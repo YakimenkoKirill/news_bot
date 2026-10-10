@@ -1,0 +1,70 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "news-bot"
+dynamic = ["version"]
+description = "Бот собирает новости, пересказывает их через DeepSeek и публикует в Telegram-канал"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "aiogram>=3",
+    "telethon>=1",
+    "aiohttp>=3",
+    "feedparser>=6",
+    "beautifulsoup4>=4",
+    "lxml>=5",
+    "trafilatura>=1",
+    "sqlalchemy[asyncio]>=2",
+    "asyncpg>=0.29",
+    "alembic>=1",
+    "apscheduler>=3.10,<4",
+    "tenacity>=8",
+    "simhash>=2",
+    "openai>=1",
+    "pydantic>=2",
+    "pydantic-settings>=2",
+    "PyYAML>=6",
+    "structlog>=24",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "aioresponses",
+    "ruff",
+    "mypy",
+    "pre-commit",
+    "types-PyYAML",
+]
+
+[tool.hatch.version]
+path = "app/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["prompts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "ASYNC", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+exclude = ["^prompts/"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "integration: тесты с реальной БД или сетью",
+]
+filterwarnings = ["error"]
