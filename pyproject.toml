@@ -60,6 +60,7 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 python_version = "3.11"
 strict = true
 exclude = ["^prompts/"]
+plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
