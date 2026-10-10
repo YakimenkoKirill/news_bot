@@ -4,7 +4,7 @@ from typing import Any
 
 import yaml
 
-from app.config import CONFIGS_DIR, CollectorsConfig
+from app.config import CONFIGS_DIR, CollectorsConfig, TelegramConfig
 
 
 def base_section(name: str) -> dict[str, Any]:
@@ -17,3 +17,8 @@ def base_section(name: str) -> dict[str, Any]:
 def collectors_config(**overrides: Any) -> CollectorsConfig:
     """Секция collectors из base.yaml с заменой отдельных значений."""
     return CollectorsConfig(**{**base_section("collectors"), **overrides})
+
+
+def telegram_config(**overrides: Any) -> TelegramConfig:
+    """Секция telegram из base.yaml с заменой отдельных значений."""
+    return TelegramConfig(**{**base_section("telegram"), **overrides})

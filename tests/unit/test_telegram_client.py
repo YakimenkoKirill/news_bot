@@ -15,10 +15,11 @@ from app.collectors.telegram.client import (
     connect_authorized,
     with_flood_wait,
 )
-from app.config import CONFIGS_DIR, Settings, TelegramConfig, load_settings
+from app.config import CONFIGS_DIR, Settings, load_settings
 from app.logging import setup_logging
+from tests.config_helpers import telegram_config
 
-CONFIG = TelegramConfig(flood_wait_extra_s=1, flood_wait_max_retries=3, flood_wait_max_s=300)
+CONFIG = telegram_config(flood_wait_extra_s=1, flood_wait_max_retries=3, flood_wait_max_s=300)
 API_HASH = "telethon-api-hash-secret"
 
 
