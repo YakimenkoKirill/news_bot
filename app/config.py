@@ -211,3 +211,18 @@ def load_settings(configs_dir: Path | None = None, env: str | None = None) -> Se
 def get_settings() -> Settings:
     """Возвращает единственный экземпляр настроек приложения."""
     return load_settings()
+
+
+class TestDatabaseSettings(BaseSettings):
+    """Адрес БД для интеграционных тестов; остальные настройки не требуются."""
+
+    __test__ = False
+
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    test_database_url: str | None = None
+
+
+def get_test_database_url() -> str | None:
+    """Возвращает TEST_DATABASE_URL из окружения или .env, если он задан."""
+    return TestDatabaseSettings().test_database_url or None

@@ -4,7 +4,7 @@ BIN := $(VENV)/bin
 ENV_FILE ?= .env
 COMPOSE_DEV := docker compose --env-file $(ENV_FILE) -f docker/docker-compose.dev.yml
 
-.PHONY: install fmt lint test test-integration db-up db-down db-logs
+.PHONY: install fmt lint test test-integration db-up db-down db-logs migrate migration
 
 install:
 	$(PYTHON) -m venv $(VENV)
@@ -38,3 +38,10 @@ db-down:
 
 db-logs:
 	$(COMPOSE_DEV) logs -f postgres
+
+migrate:
+	$(BIN)/alembic upgrade head
+
+# Использование: make migration m="описание изменения"
+migration:
+	$(BIN)/alembic revision --autogenerate -m "$(m)"
