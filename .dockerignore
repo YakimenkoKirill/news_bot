@@ -1,0 +1,40 @@
+# Секреты и окружение
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.json
+
+# Данные, бэкапы и сессии Telethon
+data/
+backups/
+*.session
+*.session-journal
+
+# Репозиторий, тесты и служебное
+.git/
+.github/
+.claude/
+prompts/
+tests/
+docs/
+
+# Кэши и окружения
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+
+# Редакторы и система
+.idea/
+.vscode/
+.DS_Store
