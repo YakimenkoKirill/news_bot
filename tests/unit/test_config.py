@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from app import config
@@ -31,7 +32,9 @@ def isolated_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 def configs_dir(tmp_path: Path) -> Path:
     path = tmp_path / "configs"
     path.mkdir()
-    (path / "base.yaml").write_text("app:\n  timezone: Europe/Moscow\n", encoding="utf-8")
+    base = yaml.safe_load((config.CONFIGS_DIR / "base.yaml").read_text(encoding="utf-8"))
+    base["app"]["timezone"] = "Europe/Moscow"
+    (path / "base.yaml").write_text(yaml.safe_dump(base), encoding="utf-8")
     (path / "dev.yaml").write_text("app:\n  timezone: Asia/Tokyo\n", encoding="utf-8")
     (path / "prod.yaml").write_text("# пусто\n", encoding="utf-8")
     return path

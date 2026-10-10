@@ -14,7 +14,7 @@ from typing import Annotated, Any, Literal, get_args
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import (
     BaseSettings,
@@ -51,12 +51,15 @@ class AppConfig(BaseModel):
         return value
 
 
-class YamlConfig(BaseModel):
-    """Все секции configs/*.yaml; лишние ключи запрещены."""
+class DbConfig(BaseModel):
+    """Секция db: параметры пула соединений."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    app: AppConfig
+    pool_size: int = Field(ge=1)
+    max_overflow: int = Field(ge=0)
+    pool_pre_ping: bool
+    echo: bool
 
 
 class _YamlSource(PydanticBaseSettingsSource):
@@ -97,6 +100,7 @@ class Settings(BaseSettings):
     log_level: LogLevel = "INFO"
 
     app: AppConfig
+    db: DbConfig
 
     @field_validator("telegram_admin_ids", mode="before")
     @classmethod
@@ -157,6 +161,23 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     return data
 
 
+def _yaml_sections() -> frozenset[str]:
+    return frozenset(
+        name
+        for name, field in Settings.model_fields.items()
+        if isinstance(field.annotation, type) and issubclass(field.annotation, BaseModel)
+    )
+
+
+def _check_yaml_sections(data: dict[str, Any]) -> None:
+    unknown = sorted(set(data) - _yaml_sections())
+    if unknown:
+        raise ValidationError.from_exception_data(
+            "Settings",
+            [{"type": "extra_forbidden", "loc": (key,), "input": data[key]} for key in unknown],
+        )
+
+
 def load_settings(configs_dir: Path | None = None, env: str | None = None) -> Settings:
     """Загружает настройки без кэша.
 
@@ -178,7 +199,7 @@ def load_settings(configs_dir: Path | None = None, env: str | None = None) -> Se
     data = deep_merge(
         _read_yaml(directory / "base.yaml"), _read_yaml(directory / f"{env_name}.yaml")
     )
-    YamlConfig.model_validate(data)
+    _check_yaml_sections(data)
     token = _yaml_data.set(data)
     try:
         return Settings(env=env_name)

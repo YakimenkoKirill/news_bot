@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import shutil
 import signal
 from collections.abc import Iterator
 from pathlib import Path
@@ -9,7 +10,7 @@ import pytest
 import structlog
 
 from app import main as main_module
-from app.config import Settings, load_settings
+from app.config import CONFIGS_DIR, Settings, load_settings
 from app.main import Application, Component
 
 ENV = {
@@ -130,7 +131,7 @@ def settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Settings:
         monkeypatch.setenv(name, value)
     configs = tmp_path / "configs"
     configs.mkdir()
-    (configs / "base.yaml").write_text("app:\n  timezone: UTC\n", encoding="utf-8")
+    shutil.copy(CONFIGS_DIR / "base.yaml", configs / "base.yaml")
     return load_settings(configs, "dev")
 
 
