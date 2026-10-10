@@ -111,3 +111,16 @@ def choice_keyboard(field: str, options: Sequence[tuple[str, str]]) -> InlineKey
         builder.button(text=label, callback_data=AddSourceChoice(field=field, value=value))
     builder.adjust(len(options))
     return builder.as_markup()
+
+
+class KeywordAction(CallbackData, prefix="kw"):
+    """Кнопки управления словами: удалить, добавить, выбрать тип."""
+
+    action: str
+    id: int = 0
+    value: str = ""
+
+
+KW_DELETE = "delete"
+KW_ADD = "add"
+KW_TYPE = "type"

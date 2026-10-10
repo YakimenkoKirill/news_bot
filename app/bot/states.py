@@ -13,3 +13,9 @@ class AddSource(StatesGroup):
     moderation = State()
     selectors = State()
     confirm = State()
+
+
+class AddKeywords(StatesGroup):
+    """Диалог добавления ключевых или стоп-слов."""
+
+    words = State()
