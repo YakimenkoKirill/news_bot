@@ -32,3 +32,6 @@ telegram:
 normalize:
   drop_query_params: ["utm_*", "fbclid", "gclid", "yclid"]
   lang_ratio: 0.6
+
+filters:
+  allowed_languages: ["ru"]
