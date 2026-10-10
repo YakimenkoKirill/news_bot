@@ -89,6 +89,8 @@ class TelegramConfig(BaseModel):
     flood_wait_max_s: float = Field(gt=0)
     title_max_chars: int = Field(ge=1)
     album_wait_s: float = Field(gt=0)
+    ad_markers: list[str]
+    skip_forwards: bool
 
 
 class _YamlSource(PydanticBaseSettingsSource):

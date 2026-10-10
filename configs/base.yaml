@@ -25,3 +25,5 @@ telegram:
   flood_wait_max_s: 300
   title_max_chars: 120
   album_wait_s: 2
+  ad_markers: ["#реклама", "erid"]
+  skip_forwards: true
