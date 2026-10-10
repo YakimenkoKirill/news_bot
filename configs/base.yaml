@@ -17,3 +17,4 @@ collectors:
   max_articles_per_run: 10
   max_consecutive_errors: 5
   stale_after_h: 6
+  max_parallel_sources: 5

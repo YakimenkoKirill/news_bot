@@ -76,6 +76,7 @@ class CollectorsConfig(BaseModel):
     max_articles_per_run: int = Field(ge=1)
     max_consecutive_errors: int = Field(ge=1)
     stale_after_h: float = Field(gt=0)
+    max_parallel_sources: int = Field(ge=1)
 
 
 class _YamlSource(PydanticBaseSettingsSource):
