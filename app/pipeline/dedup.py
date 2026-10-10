@@ -91,8 +91,15 @@ class DedupResult:
 class DedupFields(Protocol):
     """Нормализованные поля проверяемой новости (NormalizedFields подходит)."""
 
-    canonical_url: str
-    content_hash: str
+    @property
+    def canonical_url(self) -> str:
+        """Канонический URL."""
+        raise NotImplementedError
+
+    @property
+    def content_hash(self) -> str:
+        """Хеш содержимого."""
+        raise NotImplementedError
 
 
 class FoundNews(Protocol):

@@ -42,3 +42,6 @@ dedup:
   window_h: 48
   # стартовое значение, уточняется scripts/eval_dedup.py
   simhash_max_distance: 3
+
+pipeline:
+  batch_size: 20

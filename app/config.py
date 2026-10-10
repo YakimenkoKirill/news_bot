@@ -122,6 +122,14 @@ class DedupConfig(BaseModel):
     simhash_max_distance: int = Field(ge=0, le=64)
 
 
+class PipelineConfig(BaseModel):
+    """Секция pipeline: общие параметры стадий обработки."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    batch_size: int = Field(ge=1)
+
+
 class _YamlSource(PydanticBaseSettingsSource):
     """Источник настроек из уже слитых yaml-файлов, самый низкий приоритет."""
 
@@ -166,6 +174,7 @@ class Settings(BaseSettings):
     normalize: NormalizeConfig
     filters: FiltersConfig
     dedup: DedupConfig
+    pipeline: PipelineConfig
 
     @field_validator("telegram_admin_ids", mode="before")
     @classmethod
