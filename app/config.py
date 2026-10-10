@@ -79,6 +79,16 @@ class CollectorsConfig(BaseModel):
     max_parallel_sources: int = Field(ge=1)
 
 
+class TelegramConfig(BaseModel):
+    """Секция telegram: работа с Telegram через Telethon."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    flood_wait_extra_s: float = Field(ge=0)
+    flood_wait_max_retries: int = Field(ge=0)
+    flood_wait_max_s: float = Field(gt=0)
+
+
 class _YamlSource(PydanticBaseSettingsSource):
     """Источник настроек из уже слитых yaml-файлов, самый низкий приоритет."""
 
@@ -119,6 +129,7 @@ class Settings(BaseSettings):
     app: AppConfig
     db: DbConfig
     collectors: CollectorsConfig
+    telegram: TelegramConfig
 
     @field_validator("telegram_admin_ids", mode="before")
     @classmethod

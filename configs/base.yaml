@@ -18,3 +18,8 @@ collectors:
   max_consecutive_errors: 5
   stale_after_h: 6
   max_parallel_sources: 5
+
+telegram:
+  flood_wait_extra_s: 1
+  flood_wait_max_retries: 3
+  flood_wait_max_s: 300
