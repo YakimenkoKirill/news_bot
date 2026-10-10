@@ -176,6 +176,7 @@ class PublisherConfig(BaseModel):
     image_max_bytes: int = Field(ge=1)
     min_interval_min: float = Field(ge=0)
     quiet_hours: list[str]
+    max_retries: int = Field(ge=0)
 
     @field_validator("quiet_hours")
     @classmethod
