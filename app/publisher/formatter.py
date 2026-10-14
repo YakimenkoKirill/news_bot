@@ -6,7 +6,6 @@ import html
 from dataclasses import dataclass, field, replace
 from typing import Protocol
 
-SOURCE_LABEL = "Источник"
 PARAGRAPH = "\n\n"
 
 
@@ -44,8 +43,8 @@ class Post:
         title: Заголовок (выводится жирным).
         summary: Пересказ.
         hashtags: Хэштеги.
-        link: Адрес источника.
-        source_name: Имя источника для подписи ссылки.
+        link: Адрес источника; в текст поста не выводится.
+        source_name: Имя источника; в текст поста не выводится.
         image_url: Картинка новости.
     """
 
@@ -57,33 +56,24 @@ class Post:
     image_url: str | None = None
 
     @property
-    def link_html(self) -> str:
-        """Ссылка на источник: <a href="URL">Источник: имя</a>."""
-        label = f"{SOURCE_LABEL}: {self.source_name}"
-        return f'<a href="{escape(self.link)}">{escape(label)}</a>'
-
-    @property
     def hashtags_line(self) -> str:
         """Строка хэштегов через пробел (пустая, если хэштегов нет)."""
         return " ".join(self.hashtags)
 
     @property
     def html(self) -> str:
-        """Готовый текст поста; используются только теги b и a."""
+        """Готовый текст поста: заголовок и пересказ; используется только тег b."""
         parts = [f"<b>{escape(self.title)}</b>", escape(self.summary)]
         if self.hashtags:
             parts.append(escape(self.hashtags_line))
-        parts.append(self.link_html)
         return PARAGRAPH.join(part for part in parts if part)
 
     @property
     def visible_length(self) -> int:
         """Длина текста поста, как её считает Telegram (без HTML-разметки)."""
-        label = f"{SOURCE_LABEL}: {self.source_name}"
         parts = [self.title, self.summary]
         if self.hashtags:
             parts.append(self.hashtags_line)
-        parts.append(label)
         return len(PARAGRAPH.join(part for part in parts if part))
 
     def with_summary(self, summary: str) -> Post:
@@ -94,10 +84,12 @@ class Post:
 def build_post(processed: PostContent, news: PostNews, source: PostSource) -> Post:
     """Собирает пост из пересказа, новости и источника.
 
+    Ссылка на источник и его имя сохраняются в Post, но в текст поста не попадают.
+
     Args:
         processed: Пересказ модели.
         news: Исходная новость (ссылка и картинка).
-        source: Источник (имя для подписи ссылки).
+        source: Источник (имя).
 
     Returns:
         Пост с отдельными частями для подрезки по длине.

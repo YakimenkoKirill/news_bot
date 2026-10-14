@@ -53,7 +53,7 @@ def test_cut_by_sentence() -> None:
     assert "Третье" not in fitted.html
     assert "<b>Заголовок</b>" in fitted.html
     assert "#тег" in fitted.html
-    assert 'href="https://news.example/a?x=1&amp;y=2"' in fitted.html
+    assert "news.example" not in fitted.html
 
 
 def test_cut_by_word_with_ellipsis() -> None:

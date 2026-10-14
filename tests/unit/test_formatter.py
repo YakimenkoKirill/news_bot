@@ -43,12 +43,27 @@ def test_reference_post() -> None:
     assert post.html == (
         "<b>Nvidia показала новый процессор</b>\n\n"
         "Процессор на 30% быстрее прошлой модели.\n\n"
-        "#железо #ИИ\n\n"
-        '<a href="https://news.example/a?id=1&amp;lang=ru">Источник: Пример Новости</a>'
+        "#железо #ИИ"
     )
     assert post.image_url == "https://cdn.example/1.jpg"
+    assert _tags(post.html) == {"b"}
+
+
+def test_source_not_published() -> None:
+    """Ни ссылка, ни имя источника в канал не уходят."""
+    post = build_post(Processed(), News(), Source())
+    assert "news.example" not in post.html
+    assert "Пример Новости" not in post.html
+    assert "Источник" not in post.html
+    assert "<a" not in post.html
+    assert re.findall(r'href="([^"]*)"', post.html) == []
+
+
+def test_source_kept_in_post_object() -> None:
+    """Данные источника сохраняются в объекте поста, хотя и не публикуются."""
+    post = build_post(Processed(), News(), Source())
     assert post.link == "https://news.example/a?id=1&lang=ru"
-    assert _tags(post.html) == {"b", "a"}
+    assert post.source_name == "Пример Новости"
 
 
 def test_parts_kept_separately() -> None:
@@ -56,7 +71,6 @@ def test_parts_kept_separately() -> None:
     assert post.title == "Nvidia показала новый процессор"
     assert post.summary == "Процессор на 30% быстрее прошлой модели."
     assert post.hashtags == ["#железо", "#ИИ"]
-    assert post.link_html.startswith('<a href="https://news.example/a')
 
 
 def test_special_characters_escaped() -> None:
@@ -68,24 +82,13 @@ def test_special_characters_escaped() -> None:
     assert "<script>" not in post.html
     assert "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; «кавычки»" in post.html
     assert "a &lt; b &gt; c &amp; &#x27;d&#x27; &quot;e&quot;" in post.html
-    assert "Источник: Tom &amp; Jerry &lt;News&gt;" in post.html
-    assert _tags(post.html) == {"b", "a"}
-
-
-def test_quotes_in_url_escaped() -> None:
-    news = News(url='https://e.com/a?q="x"&y=<1>')
-    post = build_post(Processed(), news, Source())
-    assert 'href="https://e.com/a?q=&quot;x&quot;&amp;y=&lt;1&gt;"' in post.html
-    hrefs = re.findall(r'href="([^"]*)"', post.html)
-    assert len(hrefs) == 1
+    assert _tags(post.html) == {"b"}
 
 
 def test_no_hashtags_line_omitted() -> None:
     post = build_post(Processed(hashtags=[]), News(), Source())
     assert post.html == (
-        "<b>Nvidia показала новый процессор</b>\n\n"
-        "Процессор на 30% быстрее прошлой модели.\n\n"
-        '<a href="https://news.example/a?id=1&amp;lang=ru">Источник: Пример Новости</a>'
+        "<b>Nvidia показала новый процессор</b>\n\nПроцессор на 30% быстрее прошлой модели."
     )
     assert "\n\n\n" not in post.html
 
@@ -99,6 +102,6 @@ def test_emoji_preserved() -> None:
 
 def test_visible_length_counts_text_without_markup() -> None:
     post = Post(title="T&", summary="S", link="https://e.com/?a=1&b=2", source_name="Src")
-    assert post.visible_length == len("T&\n\nS\n\nИсточник: Src")
+    assert post.visible_length == len("T&\n\nS")
     assert post.with_summary("Другой").summary == "Другой"
     assert post.with_summary("Другой").title == "T&"

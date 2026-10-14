@@ -6,16 +6,17 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any, Protocol
 
-from sqlalchemy import BigInteger, func, select, update
+from sqlalchemy import BigInteger, ColumnElement, Select, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import NewsItem
+from app.db.models import NewsItem, ProcessedPost
 from app.domain.enums import NewsStatus
 from app.domain.status import ensure_transition
 
 TG_MESSAGE_ID_KEY = "msg_id"
 _DIGITS_RE = r"^[0-9]+$"
+_SECONDS_PER_HOUR = 3600
 
 UPDATABLE_FIELDS = frozenset(
     {
@@ -84,6 +85,41 @@ class RawNews(Protocol):
     def raw_meta(self) -> Mapping[str, Any]:
         """Служебные данные сборщика."""
         raise NotImplementedError
+
+
+def _priority(decay_per_h: float) -> ColumnElement[float]:
+    """Ключ сортировки очереди публикации (больше — раньше).
+
+    priority = score − decay × возраст_в_часах. Слагаемое −decay × now одинаково
+    для всех постов, поэтому сортировка идёт по score + decay × epoch(время) / 3600:
+    порядок не зависит от текущего времени.
+    """
+    published = func.coalesce(NewsItem.published_at, NewsItem.created_at)
+    hours = func.extract("epoch", published) / _SECONDS_PER_HOUR
+    return ProcessedPost.relevance_score + decay_per_h * hours
+
+
+def _check_statuses(statuses: Sequence[NewsStatus]) -> list[NewsStatus]:
+    result = list(statuses)
+    if not result:
+        raise ValueError("не задан ни один статус")
+    return result
+
+
+def _check_decay(decay_per_h: float) -> None:
+    if decay_per_h < 0:
+        raise ValueError(f"decay_per_h не может быть отрицательным, получено {decay_per_h}")
+
+
+def _prepared_query(
+    statuses: Sequence[NewsStatus], decay_per_h: float
+) -> Select[NewsItem, ProcessedPost]:
+    return (
+        select(NewsItem, ProcessedPost)
+        .join(ProcessedPost, ProcessedPost.news_item_id == NewsItem.id)
+        .where(NewsItem.status.in_(statuses))
+        .order_by(_priority(decay_per_h).desc(), NewsItem.id)
+    )
 
 
 class NewsRepository:
@@ -240,6 +276,94 @@ class NewsRepository:
             .execution_options(populate_existing=True)
         )
         return list((await self._session.scalars(stmt)).all())
+
+    async def list_prepared(
+        self,
+        statuses: Sequence[NewsStatus],
+        decay_per_h: float,
+        limit: int,
+        offset: int,
+    ) -> list[tuple[NewsItem, ProcessedPost]]:
+        """Новости с пересказом в одном из статусов, по приоритету публикации.
+
+        Без блокировок строк; порядок совпадает с последовательными claim_next.
+
+        Args:
+            statuses: Статусы новостей.
+            decay_per_h: Снижение оценки за час возраста (0 — только по оценке).
+            limit: Сколько строк вернуть.
+            offset: Сколько строк пропустить.
+
+        Returns:
+            Пары (новость, пересказ).
+
+        Raises:
+            ValueError: Пустой список статусов, limit <= 0, offset < 0 или decay_per_h < 0.
+        """
+        checked = _check_statuses(statuses)
+        _check_decay(decay_per_h)
+        if limit <= 0:
+            raise ValueError(f"limit должен быть положительным, получено {limit}")
+        if offset < 0:
+            raise ValueError(f"offset не может быть отрицательным, получено {offset}")
+        stmt = _prepared_query(checked, decay_per_h).limit(limit).offset(offset)
+        rows = (await self._session.execute(stmt)).all()
+        return [(news, post) for news, post in rows]
+
+    async def count_prepared(self, statuses: Sequence[NewsStatus]) -> int:
+        """Число новостей с пересказом в одном из статусов.
+
+        Raises:
+            ValueError: Пустой список статусов.
+        """
+        checked = _check_statuses(statuses)
+        stmt = (
+            select(func.count())
+            .select_from(NewsItem)
+            .join(ProcessedPost, ProcessedPost.news_item_id == NewsItem.id)
+            .where(NewsItem.status.in_(checked))
+        )
+        return int(await self._session.scalar(stmt) or 0)
+
+    async def claim_next(
+        self, statuses: Sequence[NewsStatus], decay_per_h: float
+    ) -> NewsItem | None:
+        """Захватывает пост с наибольшим приоритетом (FOR UPDATE SKIP LOCKED).
+
+        Строки, занятые другими транзакциями, пропускаются; блокировка держится до
+        конца транзакции вызывающего.
+
+        Raises:
+            ValueError: Пустой список статусов или decay_per_h < 0.
+        """
+        checked = _check_statuses(statuses)
+        _check_decay(decay_per_h)
+        stmt = (
+            _prepared_query(checked, decay_per_h)
+            .limit(1)
+            .with_for_update(skip_locked=True, of=NewsItem)
+            .execution_options(populate_existing=True)
+        )
+        row = (await self._session.execute(stmt)).first()
+        return row[0] if row is not None else None
+
+    async def claim_one(self, news_id: int, statuses: Sequence[NewsStatus]) -> NewsItem | None:
+        """Захватывает новость по id, если она в одном из статусов и не занята.
+
+        Не ждёт чужую блокировку: занятая строка, другой статус или несуществующий
+        id дают None. Блокировка держится до конца транзакции вызывающего.
+
+        Raises:
+            ValueError: Пустой список статусов.
+        """
+        checked = _check_statuses(statuses)
+        stmt = (
+            select(NewsItem)
+            .where(NewsItem.id == news_id, NewsItem.status.in_(checked))
+            .with_for_update(skip_locked=True)
+            .execution_options(populate_existing=True)
+        )
+        return (await self._session.scalars(stmt)).one_or_none()
 
     async def update_fields(self, news_id: int, **fields: Any) -> bool:
         """Обновляет поля, заполняемые нормализацией и дедупликацией.

@@ -10,6 +10,8 @@ from aiogram.filters.callback_data import CallbackData
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from app.domain.enums import NewsStatus
+
 BUTTONS_PER_SOURCE = 3
 
 
@@ -157,4 +159,128 @@ def review_keyboard(post_id: int) -> InlineKeyboardMarkup:
     for action, label in REVIEW_BUTTONS:
         builder.button(text=label, callback_data=ReviewAction(action=action, post_id=post_id))
     builder.adjust(REVIEW_BUTTONS_PER_ROW)
+    return builder.as_markup()
+
+
+class QueueTab(StrEnum):
+    """Вкладка списка /queue."""
+
+    QUEUE = "queue"
+    REVIEW = "review"
+
+
+QUEUE_TAB_STATUSES: dict[QueueTab, tuple[NewsStatus, ...]] = {
+    QueueTab.QUEUE: (NewsStatus.APPROVED, NewsStatus.SCHEDULED),
+    QueueTab.REVIEW: (NewsStatus.PENDING_REVIEW,),
+}
+QUEUE_TAB_LABELS = {QueueTab.QUEUE: "В очереди", QueueTab.REVIEW: "На модерации"}
+QUEUE_ACTIVE_MARK = "• "
+QUEUE_OPEN_PER_ROW = 5
+
+
+class QueueActionType(StrEnum):
+    """Действия в списке /queue."""
+
+    PAGE = "page"
+    OPEN = "open"
+    BACK = "back"
+    PUBLISH = "publish"
+    CONFIRM = "confirm"
+    CANCEL = "cancel"
+
+
+class QueueAction(CallbackData, prefix="q"):
+    """Нажатие кнопки в списке /queue или под предпросмотром."""
+
+    action: QueueActionType
+    tab: QueueTab
+    page: int
+    news_id: int = 0
+
+
+def queue_keyboard(
+    positions: Sequence[tuple[int, int]],
+    tab: QueueTab,
+    page: int,
+    has_prev: bool,
+    has_next: bool,
+) -> InlineKeyboardMarkup:
+    """Кнопки страницы /queue: «👁 N» на каждый пост, вкладки и навигация.
+
+    Args:
+        positions: Пары (номер в очереди, id новости).
+        tab: Текущая вкладка.
+        page: Текущая страница.
+        has_prev: Есть предыдущая страница.
+        has_next: Есть следующая страница.
+    """
+    builder = InlineKeyboardBuilder()
+    for number, news_id in positions:
+        builder.button(
+            text=f"👁 {number}",
+            callback_data=QueueAction(
+                action=QueueActionType.OPEN, tab=tab, page=page, news_id=news_id
+            ),
+        )
+    full_rows, rest = divmod(len(positions), QUEUE_OPEN_PER_ROW)
+    row_sizes = [QUEUE_OPEN_PER_ROW] * full_rows + ([rest] if rest else [])
+    for item in QueueTab:
+        mark = QUEUE_ACTIVE_MARK if item is tab else ""
+        builder.button(
+            text=f"{mark}{QUEUE_TAB_LABELS[item]}",
+            callback_data=QueueAction(action=QueueActionType.PAGE, tab=item, page=0),
+        )
+    row_sizes.append(len(QueueTab))
+    nav = 0
+    if has_prev:
+        builder.button(
+            text="◀️",
+            callback_data=QueueAction(action=QueueActionType.PAGE, tab=tab, page=page - 1),
+        )
+        nav += 1
+    if has_next:
+        builder.button(
+            text="▶️",
+            callback_data=QueueAction(action=QueueActionType.PAGE, tab=tab, page=page + 1),
+        )
+        nav += 1
+    if nav:
+        row_sizes.append(nav)
+    builder.adjust(*row_sizes)
+    return builder.as_markup()
+
+
+def queue_item_keyboard(news_id: int, tab: QueueTab, page: int) -> InlineKeyboardMarkup:
+    """Кнопки под предпросмотром поста из /queue: «Опубликовать сейчас» и «К списку»."""
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="🚀 Опубликовать сейчас",
+        callback_data=QueueAction(
+            action=QueueActionType.PUBLISH, tab=tab, page=page, news_id=news_id
+        ),
+    )
+    builder.button(
+        text="◀️ К списку",
+        callback_data=QueueAction(action=QueueActionType.BACK, tab=tab, page=page, news_id=news_id),
+    )
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def queue_confirm_keyboard(news_id: int, tab: QueueTab, page: int) -> InlineKeyboardMarkup:
+    """Подтверждение публикации поста вне очереди."""
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="✅ Да, опубликовать",
+        callback_data=QueueAction(
+            action=QueueActionType.CONFIRM, tab=tab, page=page, news_id=news_id
+        ),
+    )
+    builder.button(
+        text="Отмена",
+        callback_data=QueueAction(
+            action=QueueActionType.CANCEL, tab=tab, page=page, news_id=news_id
+        ),
+    )
+    builder.adjust(2)
     return builder.as_markup()

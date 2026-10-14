@@ -61,3 +61,32 @@ def next_slot(
         if in_quiet_hours(local.time(), quiet_hours):
             candidate = _quiet_end(local, quiet_hours, zone)
     return candidate.astimezone(UTC)
+
+
+def queue_eta(
+    now: datetime,
+    last_published_at: datetime | None,
+    count: int,
+    min_interval_min: float,
+    quiet_hours: QuietWindow | None,
+    tz: str | ZoneInfo,
+) -> list[datetime]:
+    """Ожидаемое время выхода первых count постов очереди.
+
+    Первый пост — в ближайший слот, каждый следующий — через интервал после
+    предыдущего с учётом тихих часов. Это оценка: новые посты, пауза и сбои
+    публикации не учитываются.
+
+    Returns:
+        Время выхода в UTC; пустой список при count = 0.
+    """
+    result: list[datetime] = []
+    previous: datetime | None = None
+    for _ in range(count):
+        if previous is None:
+            slot = next_slot(now, last_published_at, min_interval_min, quiet_hours, tz)
+        else:
+            slot = next_slot(previous, previous, min_interval_min, quiet_hours, tz)
+        result.append(slot)
+        previous = slot
+    return result

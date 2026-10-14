@@ -3,12 +3,18 @@ from typing import Any
 
 import pytest
 import structlog
+from aiogram.methods import AnswerCallbackQuery
+from aiogram.types import Update
 
-from app.bot import texts
+from app.bot import BotDeps, create_dispatcher, texts
+from app.bot.handlers import queue as queue_handlers
+from app.bot.keyboards import QueueAction, QueueActionType, QueueTab
 from app.bot.middlewares import AdminOnlyMiddleware
 from app.config import Settings
 from app.logging import setup_logging
+from tests.bot_helpers import FakeSession, callback_update, make_bot, message_update
 from tests.config_helpers import bot_config
+from tests.unit.test_bot_queue import Db, _deps
 
 SETTINGS_ADMIN = 111
 DB_ADMIN = 222
@@ -138,3 +144,41 @@ async def test_callback_from_admin_passes(middleware: AdminOnlyMiddleware) -> No
     handler, event = Handler(), _callback(SETTINGS_ADMIN)
     assert await middleware(handler, event, {}) == "handled"  # type: ignore[arg-type]
     assert event.answers == []
+
+
+async def _feed_queue(update: Update) -> FakeSession:
+    deps = BotDeps(
+        settings=Settings.model_construct(
+            telegram_admin_ids=[SETTINGS_ADMIN], bot=bot_config(refusal_cooldown_s=COOLDOWN)
+        ),
+        admin_repo=AdminRepo(),
+        routers=[queue_handlers.create_router()],
+        workflow_data={"queue_deps": _deps(Db())},
+    )
+    bot, session = make_bot()
+    await create_dispatcher(deps).feed_update(bot, update)
+    return session
+
+
+def _queue_callback(user_id: int) -> Update:
+    data = QueueAction(action=QueueActionType.CONFIRM, tab=QueueTab.QUEUE, page=0, news_id=1)
+    return callback_update(user_id, data.pack())
+
+
+async def test_stranger_refused_on_queue_command() -> None:
+    session = await _feed_queue(message_update(STRANGER, "/queue"))
+    assert session.sent_texts() == [texts.ACCESS_DENIED]
+
+
+async def test_stranger_refused_on_queue_callback() -> None:
+    session = await _feed_queue(_queue_callback(STRANGER))
+    answers = [r for r in session.requests if isinstance(r, AnswerCallbackQuery)]
+    assert [(a.text, a.show_alert) for a in answers] == [(texts.ACCESS_DENIED, True)]
+    assert not [r for r in session.requests if not isinstance(r, AnswerCallbackQuery)]
+
+
+async def test_admin_queue_not_caught_by_fallback() -> None:
+    session = await _feed_queue(message_update(SETTINGS_ADMIN, "/queue"))
+    [text] = session.sent_texts()
+    assert text.startswith("<b>Очередь публикации</b>")
+    assert text != texts.UNKNOWN_COMMAND

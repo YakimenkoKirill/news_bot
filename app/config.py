@@ -178,6 +178,7 @@ class PublisherConfig(BaseModel):
     min_interval_min: float = Field(ge=0)
     quiet_hours: list[str]
     max_retries: int = Field(ge=0)
+    score_decay_per_h: float = Field(ge=0)
 
     @field_validator("quiet_hours")
     @classmethod
@@ -273,6 +274,7 @@ class BotConfig(BaseModel):
     refusal_cooldown_s: float = Field(ge=0)
     page_size: int = Field(ge=1)
     max_keyword_chars: int = Field(ge=1)
+    queue_title_chars: int = Field(ge=1)
 
 
 class _YamlSource(PydanticBaseSettingsSource):

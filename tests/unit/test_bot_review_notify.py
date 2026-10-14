@@ -174,7 +174,7 @@ async def test_text_preview_without_photo() -> None:
     await _notifier(db, bot, image_ok=False).notify(_post(1))
     kinds = {kind for kind, _ in bot.calls}
     assert kinds == {"message"}
-    assert bot.calls[0][1]["link_preview_options"].url == "https://src.example/a"
+    assert "link_preview_options" not in bot.calls[0][1]
 
 
 async def test_rejected_photo_falls_back_to_text() -> None:

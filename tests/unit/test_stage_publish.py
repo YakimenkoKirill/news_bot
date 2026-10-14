@@ -20,6 +20,7 @@ CFG = PublisherConfig(**{**base_section("publisher"), "quiet_hours": ["23:00", "
 CHANNEL = -100777
 TZ = "Europe/Moscow"
 NOON = datetime(2026, 10, 10, 9, 0, tzinfo=UTC)  # 12:00 по Москве
+SECONDS_PER_HOUR = 3600
 
 
 @dataclass
@@ -30,6 +31,7 @@ class News:
     url: str = "https://src.example/a"
     image_url: str | None = "https://cdn.example/a.jpg"
     created_at: datetime = NOON - timedelta(hours=1)
+    published_at: datetime | None = None
 
 
 @dataclass
@@ -51,12 +53,17 @@ class NewsRepo:
     def __init__(self, db: Db) -> None:
         self.db = db
 
-    async def claim_batch(
-        self, status: NewsStatus | Sequence[NewsStatus], limit: int
-    ) -> Sequence[News]:
-        statuses = [status] if isinstance(status, NewsStatus) else list(status)
+    async def claim_next(self, statuses: Sequence[NewsStatus], decay_per_h: float) -> News | None:
         queued = [n for n in self.db.news.values() if n.status in statuses]
-        return sorted(queued, key=lambda n: (n.created_at, n.id))[:limit]
+
+        def priority(n: News) -> float:
+            moment = n.published_at or n.created_at
+            post = self.db.posts.get(n.id)
+            score = post.relevance_score if post is not None else 0.0
+            return score + decay_per_h * moment.timestamp() / SECONDS_PER_HOUR
+
+        ordered = sorted(queued, key=lambda n: (-priority(n), n.id))
+        return ordered[0] if ordered else None
 
     async def set_status(
         self, news_id: int, expected: NewsStatus, new: NewsStatus, reason: str | None = None
@@ -130,14 +137,14 @@ class Sink:
         self.events.append(event)
 
 
-def _post(news_id: int) -> ProcessedPost:
+def _post(news_id: int, score: float = 0.9) -> ProcessedPost:
     return ProcessedPost(
         id=news_id * 10,
         news_item_id=news_id,
         ai_title="Заголовок",
         ai_summary="Пересказ новости.",
         hashtags=["#тег"],
-        relevance_score=0.9,
+        relevance_score=score,
         prompt_version="v1",
         prompt_tokens=1,
         completion_tokens=1,
@@ -154,8 +161,16 @@ class Env:
     image_checks: list[str | None]
 
 
-def _env(news: list[News], image_ok: bool = True, sender: Sender | None = None) -> Env:
-    db = Db(news={n.id: n for n in news}, posts={n.id: _post(n.id) for n in news})
+def _env(
+    news: list[News],
+    image_ok: bool = True,
+    sender: Sender | None = None,
+    scores: dict[int, float] | None = None,
+    cfg: PublisherConfig = CFG,
+) -> Env:
+    scores = scores or {}
+    posts = {n.id: _post(n.id, scores.get(n.id, 0.9)) for n in news}
+    db = Db(news={n.id: n for n in news}, posts=posts)
     sender = sender or Sender()
     sink = Sink()
     checks: list[str | None] = []
@@ -178,7 +193,7 @@ def _env(news: list[News], image_ok: bool = True, sender: Sender | None = None) 
         check_image=check,
         publisher=sender,
         sink=sink,
-        cfg=CFG,
+        cfg=cfg,
         channel_id=CHANNEL,
         tz=TZ,
     )
@@ -186,7 +201,7 @@ def _env(news: list[News], image_ok: bool = True, sender: Sender | None = None) 
 
 
 async def test_successful_publication_one_per_call() -> None:
-    env = _env([News(1), News(2, created_at=NOON - timedelta(hours=2))])
+    env = _env([News(1), News(2)], scores={1: 0.6, 2: 0.8})
     report = await publish_due(NOON, env.deps)
     assert report == PublishReport(news_id=2, message_id=9001)
     assert env.db.news[2].status is NewsStatus.PUBLISHED
@@ -195,10 +210,53 @@ async def test_successful_publication_one_per_call() -> None:
     assert pub.status is PublicationStatus.SENT
     assert (pub.message_id, pub.published_at, pub.processed_post_id) == (9001, NOON, 20)
     fitted, image_url, link = env.sender.calls[0]
+    assert link is None
     assert fitted.use_photo is True
     assert image_url == "https://cdn.example/a.jpg"
-    assert link == "https://src.example/a"
     assert "<b>Заголовок</b>" in fitted.html
+
+
+def _cfg(decay: float) -> PublisherConfig:
+    return CFG.model_copy(update={"score_decay_per_h": decay})
+
+
+async def test_highest_score_first_without_decay() -> None:
+    news = [
+        News(1, published_at=NOON),
+        News(2, published_at=NOON - timedelta(hours=12)),
+        News(3, published_at=NOON - timedelta(hours=1)),
+    ]
+    env = _env(news, scores={1: 0.6, 2: 0.8, 3: 0.7}, cfg=_cfg(0))
+    assert (await publish_due(NOON, env.deps)).news_id == 2
+
+
+async def test_fresh_post_overtakes_older_with_decay() -> None:
+    news = [
+        News(1, published_at=NOON - timedelta(hours=12)),
+        News(2, published_at=NOON),
+    ]
+    env = _env(news, scores={1: 0.8, 2: 0.6}, cfg=_cfg(0.02))
+    assert (await publish_due(NOON, env.deps)).news_id == 2
+
+
+async def test_decay_uses_created_at_without_published_at() -> None:
+    news = [
+        News(1, published_at=NOON - timedelta(hours=12)),
+        News(2, created_at=NOON, published_at=None),
+    ]
+    env = _env(news, scores={1: 0.8, 2: 0.6}, cfg=_cfg(0.02))
+    assert (await publish_due(NOON, env.deps)).news_id == 2
+
+
+async def test_equal_priority_smaller_id_first() -> None:
+    env = _env([News(2), News(1)], scores={1: 0.7, 2: 0.7})
+    assert (await publish_due(NOON, env.deps)).news_id == 1
+
+
+async def test_scheduled_competes_with_approved() -> None:
+    news = [News(1), News(2, status=NewsStatus.SCHEDULED)]
+    env = _env(news, scores={1: 0.6, 2: 0.9})
+    assert (await publish_due(NOON, env.deps)).news_id == 2
 
 
 async def test_scheduled_post_published() -> None:

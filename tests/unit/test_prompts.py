@@ -45,7 +45,7 @@ def test_system_and_user_split() -> None:
     assert "Запуск спутника перенесли" not in system
     assert SECRET_TEXT in user
     assert "Заголовок: Запуск спутника перенесли" in user
-    assert "Источник: space.example" in user
+    assert "space.example" not in user
     assert "Дата публикации: 2026-10-10T09:30:00+00:00" in user
 
 

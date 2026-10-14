@@ -11,37 +11,33 @@ from typing import Any, Protocol
 
 import structlog
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import InlineKeyboardMarkup, LinkPreviewOptions
 
 from app.bot.keyboards import review_keyboard
+from app.bot.preview import (
+    PreviewDeps,
+    ReviewNews,
+    ReviewNewsRepo,
+    ReviewSourceRepo,
+    build_preview,
+    send_preview,
+)
 from app.config import PublisherConfig
 from app.db.models import ProcessedPost
-from app.publisher.formatter import PostNews, PostSource, build_post
-from app.publisher.limits import FittedPost, fit_post
 from app.publisher.media import ImageCheck
 
 log = structlog.get_logger(__name__)
 
+__all__ = [
+    "REVIEW_NOTE_PREFIX",
+    "BotReviewNotifier",
+    "ReviewNews",
+    "ReviewNewsRepo",
+    "ReviewNotifierDeps",
+    "ReviewPostRepo",
+    "ReviewSourceRepo",
+]
+
 REVIEW_NOTE_PREFIX = "⚠️ Проверьте перед публикацией:"
-
-
-class ReviewNews(PostNews, Protocol):
-    """Новость поста (NewsItem подходит структурно)."""
-
-    source_id: int
-
-
-class ReviewNewsRepo(Protocol):
-    async def get(self, news_id: int) -> ReviewNews | None:
-        """Новость по id."""
-        raise NotImplementedError
-
-
-class ReviewSourceRepo(Protocol):
-    async def get(self, source_id: int) -> PostSource | None:
-        """Источник по id."""
-        raise NotImplementedError
 
 
 class ReviewPostRepo(Protocol):
@@ -75,13 +71,6 @@ class ReviewNotifierDeps:
     cfg: PublisherConfig
 
 
-@dataclass(frozen=True)
-class _Preview:
-    fitted: FittedPost
-    image_url: str | None
-    link: str
-
-
 class BotReviewNotifier:
     """Реализация ReviewNotifier: предпросмотр поста каждому администратору.
 
@@ -92,10 +81,17 @@ class BotReviewNotifier:
     def __init__(self, bot: Any, deps: ReviewNotifierDeps) -> None:
         self._bot = bot
         self._deps = deps
+        self._preview_deps = PreviewDeps(
+            session_scope=deps.session_scope,
+            news_repo=deps.news_repo,
+            source_repo=deps.source_repo,
+            check_image=deps.check_image,
+            cfg=deps.cfg,
+        )
 
     async def notify(self, post: ProcessedPost) -> None:
         """Отправляет пост всем администраторам; ошибка у одного не мешает остальным."""
-        preview = await self._build(post)
+        preview = await build_preview(post, self._preview_deps)
         if preview is None:
             return
         keyboard = review_keyboard(post.id)
@@ -106,7 +102,7 @@ class BotReviewNotifier:
                     await self._bot.send_message(
                         chat_id=admin_id, text=note, parse_mode=ParseMode.HTML
                     )
-                await self._send_preview(admin_id, preview, keyboard)
+                await send_preview(self._bot, admin_id, preview, keyboard)
             except Exception:
                 log.exception("review.notify_failed", admin_id=admin_id, post_id=post.id)
 
@@ -123,37 +119,3 @@ class BotReviewNotifier:
             async with self._deps.session_scope() as session:
                 await self._deps.post_repo(session).set_snooze(post.id, None)
         return len(posts)
-
-    async def _build(self, post: ProcessedPost) -> _Preview | None:
-        async with self._deps.session_scope() as session:
-            news = await self._deps.news_repo(session).get(post.news_item_id)
-            source = await self._deps.source_repo(session).get(news.source_id) if news else None
-        if news is None or source is None:
-            log.error("review.missing_data", post_id=post.id)
-            return None
-        image = await self._deps.check_image(news.image_url)
-        fitted = fit_post(build_post(post, news, source), has_photo=image.ok, cfg=self._deps.cfg)
-        return _Preview(fitted=fitted, image_url=news.image_url, link=news.url)
-
-    async def _send_preview(
-        self, admin_id: int, preview: _Preview, keyboard: InlineKeyboardMarkup
-    ) -> None:
-        if preview.fitted.use_photo and preview.image_url:
-            try:
-                await self._bot.send_photo(
-                    chat_id=admin_id,
-                    photo=preview.image_url,
-                    caption=preview.fitted.html,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=keyboard,
-                )
-                return
-            except TelegramBadRequest as exc:
-                log.warning("review.photo_rejected", admin_id=admin_id, error=exc.message)
-        await self._bot.send_message(
-            chat_id=admin_id,
-            text=preview.fitted.html,
-            parse_mode=ParseMode.HTML,
-            link_preview_options=LinkPreviewOptions(url=preview.link, prefer_large_media=True),
-            reply_markup=keyboard,
-        )
