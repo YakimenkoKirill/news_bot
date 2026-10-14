@@ -220,3 +220,6 @@ def failed_news_line(number: int, title: str, source: str, reason: str) -> str:
 
 STATUS_ERRORS = "Открытых ошибок: {count} — /errors"
 STATUS_NO_ERRORS = "Открытых ошибок нет"
+
+REPORT_BUILDING = "Считаю…"
+REPORT_FAILED = "Не удалось собрать отчёт, подробности в /errors"
