@@ -31,6 +31,7 @@ EXPECTED = {
     (S.SCHEDULED, S.PUBLISHED),
     (S.SCHEDULED, S.FAILED),
     (S.FAILED, S.APPROVED),
+    (S.FAILED, S.NORMALIZED),
 }
 ALL_PAIRS = list(itertools.product(NewsStatus, repeat=2))
 
