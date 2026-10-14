@@ -175,4 +175,5 @@ def test_alert_event_validation() -> None:
         "budget_exceeded",
         "publish_error",
         "job_failed",
+        "ai_item_failed",
     ]

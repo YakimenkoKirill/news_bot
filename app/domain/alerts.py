@@ -17,6 +17,7 @@ class AlertKind(StrEnum):
     BUDGET_EXCEEDED = "budget_exceeded"
     PUBLISH_ERROR = "publish_error"
     JOB_FAILED = "job_failed"
+    AI_ITEM_FAILED = "ai_item_failed"
 
 
 class AlertEvent(BaseModel):

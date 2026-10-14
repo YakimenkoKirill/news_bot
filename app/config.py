@@ -25,6 +25,8 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
+from app.domain.alerts import AlertKind
+
 Environment = Literal["dev", "prod"]
 
 CONFIGS_DIR = Path(__file__).resolve().parent.parent / "configs"
@@ -219,6 +221,8 @@ class AlertsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     throttle_min: float = Field(ge=0)
+    silent_kinds: list[AlertKind]
+    max_message_chars: int = Field(ge=1)
 
 
 class SchedulerConfig(BaseModel):

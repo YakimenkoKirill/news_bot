@@ -19,6 +19,7 @@ from app.logging import bind_context
 from app.pipeline.ai.budget import BudgetExceeded
 from app.pipeline.ai.client import AiFatalError, AiUnavailableError
 from app.pipeline.ai.processor import (
+    REASON_BAD_AI_RESPONSE,
     AiRepos,
     ModeratedSource,
     PostRepo,
@@ -202,9 +203,10 @@ async def process_normalized_batch(now: datetime, deps: AiStageDeps) -> AiStageR
                             await _alert_ai_down(exc.error, now, deps)
                     counters["skipped"] += 1
                     return
-                except Exception:
+                except Exception as exc:
                     log.exception("ai_stage.item_failed")
                     counters["errors"] += 1
+                    await _alert_item_failed(item, repr(exc), now, deps)
                     return
                 if status is not None:
                     statuses[status] += 1
@@ -249,12 +251,31 @@ async def _process_one(item: ClaimableNews, now: datetime, deps: AiStageDeps) ->
     except (AiUnavailableError, AiFatalError) as exc:
         raise _StopBatch("ai_down", exc) from exc
 
+    if status is NewsStatus.FAILED:
+        await _alert_item_failed(item, REASON_BAD_AI_RESPONSE, now, deps)
     if post is not None:
         try:
             await deps.notifier.notify(post)
         except Exception:
             log.exception("ai_stage.notify_failed", post_id=post.id)
     return status
+
+
+async def _alert_item_failed(
+    item: ClaimableNews, reason: str, now: datetime, deps: AiStageDeps
+) -> None:
+    """Сообщает об ошибке обработки одной новости; ошибка отправки не ломает пачку."""
+    try:
+        await deps.sink.emit(
+            AlertEvent(
+                kind=AlertKind.AI_ITEM_FAILED,
+                key=f"{AlertKind.AI_ITEM_FAILED.value}:{item.id}",
+                message=f"Новость «{item.title}» (id {item.id}) не обработана: {reason}",
+                created_at=now,
+            )
+        )
+    except Exception:
+        log.exception("ai_stage.alert_failed", news_id=item.id)
 
 
 async def _alert_ai_down(error: Exception, now: datetime, deps: AiStageDeps) -> None:

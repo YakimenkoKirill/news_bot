@@ -106,6 +106,7 @@ ALERT_TEMPLATES = {
     "budget_exceeded": "💸 <b>Бюджет на модель исчерпан</b>\n{message}",
     "publish_error": "🔴 <b>Ошибка публикации</b>\n{message}",
     "job_failed": "⚠️ <b>Ошибка фоновой задачи</b>\n{message}",
+    "ai_item_failed": "🟠 <b>Модель не смогла обработать новость</b>\n{message}",
 }
 
 QUEUE_TITLES = {"queue": "<b>Очередь публикации</b>", "review": "<b>На модерации</b>"}

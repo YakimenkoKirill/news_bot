@@ -92,6 +92,9 @@ moderation:
 
 alerts:
   throttle_min: 30
+  # виды ошибок, которые только пишутся в журнал /errors и не шлются в чат
+  silent_kinds: ["ai_item_failed"]
+  max_message_chars: 2000   # сколько символов сообщения хранить в журнале
 
 scheduler:
   collect_every_s: 60
