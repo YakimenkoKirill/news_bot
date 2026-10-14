@@ -97,6 +97,24 @@ class SettingsRepository:
         setting = await self._session.get(Setting, key, populate_existing=True)
         return default if setting is None else setting.value
 
+    async def get_for_update(self, key: str, default: Any = None) -> Any:
+        """Значение настройки с блокировкой строки до конца транзакции.
+
+        Нужен, чтобы два экземпляра приложения не выполнили одно действие дважды:
+        второй дождётся коммита первого и увидит уже обновлённое значение.
+
+        Строка создаётся со значением default, если её ещё нет: обычный
+        SELECT ... FOR UPDATE нечего блокировать, и оба экземпляра прочитали бы
+        пустоту. INSERT ... ON CONFLICT DO UPDATE блокирует строку в обоих случаях.
+        """
+        stmt = (
+            insert(Setting)
+            .values(key=key, value=default)
+            .on_conflict_do_update(index_elements=[Setting.key], set_={"value": Setting.value})
+            .returning(Setting.value)
+        )
+        return (await self._session.scalars(stmt)).one()
+
     async def set(self, key: str, value: Any) -> None:
         """Создаёт или перезаписывает настройку (INSERT ... ON CONFLICT DO UPDATE)."""
         stmt = insert(Setting).values(key=key, value=value)

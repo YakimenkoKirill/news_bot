@@ -77,6 +77,10 @@ publisher:
   min_interval_min: 10
   max_retries: 3
   quiet_hours: ["23:00", "07:00"]
+  # подпись в конце поста: знак, затем название канала ссылкой; пустой url — без подписи
+  footer_mark: "🔵"
+  footer_title: "try_1"
+  footer_url: "https://t.me/news_try"
   # насколько снижается приоритет поста в очереди за час возраста (0 — только по оценке):
   # при 0.02 новость 12-часовой давности теряет 0.24, свежая 0.6 выйдет раньше вчерашней 0.8
   score_decay_per_h: 0.02
@@ -107,8 +111,17 @@ scheduler:
   review_every_min: 5
   heartbeat_every_s: 60
   purge_every_h: 24
+  daily_report_every_min: 5
   misfire_grace_s: 60
   failures_before_alert: 3
+
+daily_report:
+  enabled: true
+  send_at: "23:30"        # когда присылать отчёт за день (ЧЧ:ММ, app.timezone)
+  top_posts: 3            # сколько лучших постов дня показывать в отчёте
+  top_sources: 10         # сколько источников показывать в таблице, остальные — строкой «прочие»
+  source_name_chars: 18   # до скольких символов обрезать имя источника в таблице
+  budget_warn_share: 0.8  # с какой доли дневного бюджета помечать расход «⚠️»
 
 metrics:
   max_delay_min: 15

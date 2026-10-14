@@ -209,6 +209,7 @@ async def test_successful_publication_one_per_call() -> None:
     [pub] = env.db.publications
     assert pub.status is PublicationStatus.SENT
     assert (pub.message_id, pub.published_at, pub.processed_post_id) == (9001, NOON, 20)
+    assert pub.initiated_by is None, "публикация по расписанию не имеет инициатора"
     fitted, image_url, link = env.sender.calls[0]
     assert link is None
     assert fitted.use_photo is True

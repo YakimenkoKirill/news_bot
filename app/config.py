@@ -181,6 +181,16 @@ class PublisherConfig(BaseModel):
     quiet_hours: list[str]
     max_retries: int = Field(ge=0)
     score_decay_per_h: float = Field(ge=0)
+    footer_mark: str
+    footer_title: str
+    footer_url: str
+
+    @field_validator("footer_url")
+    @classmethod
+    def _check_footer_url(cls, value: str) -> str:
+        if value and not value.startswith(("http://", "https://")):
+            raise ValueError(f"footer_url: нужен адрес http(s), получено {value!r}")
+        return value
 
     @field_validator("quiet_hours")
     @classmethod
@@ -239,8 +249,36 @@ class SchedulerConfig(BaseModel):
     review_every_min: float = Field(gt=0)
     heartbeat_every_s: float = Field(gt=0)
     purge_every_h: float = Field(gt=0)
+    daily_report_every_min: float = Field(gt=0)
     misfire_grace_s: int = Field(ge=1)
     failures_before_alert: int = Field(ge=1)
+
+
+class DailyReportConfig(BaseModel):
+    """Секция daily_report: ежедневный отчёт в боте."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    enabled: bool
+    send_at: str
+    top_posts: int = Field(ge=1)
+    top_sources: int = Field(ge=1)
+    source_name_chars: int = Field(ge=1)
+    budget_warn_share: float = Field(gt=0, le=1)
+
+    @field_validator("send_at")
+    @classmethod
+    def _check_send_at(cls, value: str) -> str:
+        try:
+            datetime.strptime(value, QUIET_HOURS_FORMAT)
+        except ValueError as exc:
+            raise ValueError(f"send_at: время {value!r} не в формате ЧЧ:ММ") from exc
+        return value
+
+    @property
+    def send_time(self) -> time:
+        """Время отправки отчёта в локальном времени канала."""
+        return datetime.strptime(self.send_at, QUIET_HOURS_FORMAT).time()
 
 
 class MetricsConfig(BaseModel):
@@ -336,6 +374,7 @@ class Settings(BaseSettings):
     moderation: ModerationConfig
     alerts: AlertsConfig
     scheduler: SchedulerConfig
+    daily_report: DailyReportConfig
     metrics: MetricsConfig
     health: HealthConfig
     backup: BackupConfig

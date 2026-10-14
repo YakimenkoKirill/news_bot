@@ -86,7 +86,7 @@ async def build_preview(post: ProcessedPost, deps: PreviewDeps) -> PostPreview |
         log.error("review.missing_data", post_id=post.id)
         return None
     image = await deps.check_image(news.image_url)
-    fitted = fit_post(build_post(post, news, source), has_photo=image.ok, cfg=deps.cfg)
+    fitted = fit_post(build_post(post, news, source, deps.cfg), has_photo=image.ok, cfg=deps.cfg)
     return PostPreview(fitted=fitted, image_url=news.image_url, link=news.url)
 
 

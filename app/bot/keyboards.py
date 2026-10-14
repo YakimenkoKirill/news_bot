@@ -434,3 +434,22 @@ def confirm_resolve_all_keyboard(tab: ErrorTab, page: int) -> InlineKeyboardMark
     )
     builder.adjust(2)
     return builder.as_markup()
+
+
+class ReportAction(CallbackData, prefix="rp"):
+    """Выбор периода отчёта."""
+
+    period: str
+
+
+REPORT_LABELS = (("today", "Сегодня"), ("yesterday", "Вчера"), ("week", "7 дней"))
+
+
+def report_keyboard(current: str) -> InlineKeyboardMarkup:
+    """Кнопки выбора периода отчёта; текущий помечен «•»."""
+    builder = InlineKeyboardBuilder()
+    for value, label in REPORT_LABELS:
+        mark = QUEUE_ACTIVE_MARK if value == current else ""
+        builder.button(text=f"{mark}{label}", callback_data=ReportAction(period=value))
+    builder.adjust(len(REPORT_LABELS))
+    return builder.as_markup()

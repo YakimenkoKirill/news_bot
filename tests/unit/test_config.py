@@ -190,3 +190,18 @@ def test_purge_interval_must_be_positive(configs_dir: Path) -> None:
 
 def test_bot_error_preview_chars(configs_dir: Path) -> None:
     assert load_settings(configs_dir).bot.error_preview_chars == 80
+
+
+def test_daily_report_keys(configs_dir: Path) -> None:
+    settings = load_settings(configs_dir)
+    assert settings.daily_report.enabled is True
+    assert settings.daily_report.send_at == "23:30"
+    assert settings.daily_report.send_time.hour == 23
+    assert settings.scheduler.daily_report_every_min == 5
+
+
+@pytest.mark.parametrize("bad", ["25:00", "23-30", "вечером", ""])
+def test_invalid_send_at_rejected(configs_dir: Path, bad: str) -> None:
+    (configs_dir / "prod.yaml").write_text(f'daily_report:\n  send_at: "{bad}"\n', encoding="utf-8")
+    with pytest.raises(ValidationError, match="send_at"):
+        load_settings(configs_dir, "prod")

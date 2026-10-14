@@ -86,7 +86,15 @@ class Publisher:
         return int(message.message_id)
 
     async def _send_text(self, fitted: FittedPost, link: str | None) -> int:
-        preview = LinkPreviewOptions(url=link, prefer_large_media=True) if link else None
+        """Отправляет пост текстом; без явной ссылки превью отключается.
+
+        Иначе Telegram построит карточку по ссылке из подписи канала.
+        """
+        preview = (
+            LinkPreviewOptions(url=link, prefer_large_media=True)
+            if link
+            else LinkPreviewOptions(is_disabled=True)
+        )
         message = await self._bot.send_message(
             chat_id=self._channel_id,
             text=fitted.html,

@@ -106,7 +106,7 @@ class FakeBot:
 async def test_build_preview_with_image() -> None:
     news = News(1)
     preview = await build_preview(_post(), _deps(news, Source()))
-    expected = fit_post(build_post(_post(), news, Source()), has_photo=True, cfg=CFG)
+    expected = fit_post(build_post(_post(), news, Source(), CFG), has_photo=True, cfg=CFG)
     assert preview == PostPreview(fitted=expected, image_url=news.image_url, link=news.url)
     assert preview.fitted.use_photo is True
 

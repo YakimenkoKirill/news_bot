@@ -65,7 +65,7 @@ def test_repeated_upgrade_is_noop(clean_db: Config, test_database_url: str) -> N
     head = ScriptDirectory.from_config(clean_db).get_current_head()
     command.upgrade(clean_db, "head")
     command.upgrade(clean_db, "head")
-    assert _current_revision(test_database_url) == head == "0002"
+    assert _current_revision(test_database_url) == head == "0003"
 
 
 def test_news_items_indexes(clean_db: Config, test_database_url: str) -> None:
@@ -99,6 +99,23 @@ def test_incidents_table_added_in_0002(clean_db: Config, test_database_url: str)
     command.downgrade(clean_db, "0001")
     assert "incidents" not in _table_names(test_database_url)
     assert _current_revision(test_database_url) == "0001"
+
+
+def test_publication_initiator_added_in_0003(clean_db: Config, test_database_url: str) -> None:
+    command.upgrade(clean_db, "head")
+
+    def columns(url: str) -> set[str]:
+        found = _with_connection(url, lambda conn: inspect(conn).get_columns("publications"))
+        return {str(column["name"]) for column in found}
+
+    before_downgrade = columns(test_database_url)
+    assert "initiated_by" in before_downgrade
+
+    command.downgrade(clean_db, "0002")
+    after = columns(test_database_url)
+    assert "initiated_by" not in after
+    assert after == before_downgrade - {"initiated_by"}
+    assert _current_revision(test_database_url) == "0002"
 
 
 def test_autogenerate_finds_no_differences(clean_db: Config, test_database_url: str) -> None:
