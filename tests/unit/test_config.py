@@ -168,3 +168,25 @@ def test_alerts_message_limit_must_be_positive(configs_dir: Path) -> None:
     (configs_dir / "prod.yaml").write_text("alerts:\n  max_message_chars: 0\n", encoding="utf-8")
     with pytest.raises(ValidationError, match="max_message_chars"):
         load_settings(configs_dir, "prod")
+
+
+def test_alerts_retention_and_purge_interval(configs_dir: Path) -> None:
+    settings = load_settings(configs_dir)
+    assert settings.alerts.retention_days == 30
+    assert settings.scheduler.purge_every_h == 24
+
+
+def test_retention_days_must_be_positive(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text("alerts:\n  retention_days: 0\n", encoding="utf-8")
+    with pytest.raises(ValidationError, match="retention_days"):
+        load_settings(configs_dir, "prod")
+
+
+def test_purge_interval_must_be_positive(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text("scheduler:\n  purge_every_h: 0\n", encoding="utf-8")
+    with pytest.raises(ValidationError, match="purge_every_h"):
+        load_settings(configs_dir, "prod")
+
+
+def test_bot_error_preview_chars(configs_dir: Path) -> None:
+    assert load_settings(configs_dir).bot.error_preview_chars == 80

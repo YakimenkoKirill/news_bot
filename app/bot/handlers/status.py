@@ -62,6 +62,14 @@ class StatusSettingsRepo(Protocol):
         raise NotImplementedError
 
 
+class StatusIncidentRepo(Protocol):
+    """Нужная /status часть IncidentRepository."""
+
+    async def count(self, open_only: bool) -> int:
+        """Число инцидентов журнала."""
+        raise NotImplementedError
+
+
 @dataclass(frozen=True)
 class StatusDeps:
     """Зависимости команд состояния (передаются в workflow_data как status_deps)."""
@@ -72,6 +80,7 @@ class StatusDeps:
     post_repo: Callable[[Any], StatusPostRepo]
     publication_repo: Callable[[Any], StatusPublicationRepo]
     settings_repo: Callable[[Any], StatusSettingsRepo]
+    incident_repo: Callable[[Any], StatusIncidentRepo]
     daily_budget: Decimal
     channel_id: int
     tz: ZoneInfo
@@ -92,6 +101,7 @@ async def build_status(deps: StatusDeps) -> str:
         spent = await deps.post_repo(session).cost_since(day_start)
         last = await deps.publication_repo(session).last_published_at(deps.channel_id)
         paused = bool(await deps.settings_repo(session).get(PAUSED_SETTING, False))
+        open_errors = await deps.incident_repo(session).count(open_only=True)
 
     nonzero = [f"{status.value} — {count}" for status, count in counts.items() if count]
     problems = sum(1 for source in sources if source.error_count > 0)
@@ -104,6 +114,9 @@ async def build_status(deps: StatusDeps) -> str:
             f"Проблемных источников: {problems}",
             f"Расход DeepSeek за сутки: {_money(spent)} из {_money(deps.daily_budget)}",
             f"Последняя публикация: {last_text}",
+            texts.STATUS_ERRORS.format(count=open_errors)
+            if open_errors
+            else texts.STATUS_NO_ERRORS,
         ]
     )
 

@@ -36,6 +36,7 @@ class Db:
     last: datetime | None = None
     settings: dict[str, Any] = field(default_factory=dict)
     cost_since_arg: list[datetime] = field(default_factory=list)
+    open_incidents: int = 0
 
 
 class Repo:
@@ -54,6 +55,10 @@ class Repo:
 
     async def last_published_at(self, channel_id: int) -> datetime | None:
         return self.db.last
+
+    async def count(self, open_only: bool) -> int:
+        assert open_only is True
+        return self.db.open_incidents
 
     async def get(self, key: str, default: Any = None) -> Any:
         return self.db.settings.get(key, default)
@@ -74,6 +79,7 @@ def _deps(db: Db) -> StatusDeps:
         post_repo=Repo,
         publication_repo=Repo,
         settings_repo=Repo,
+        incident_repo=Repo,
         daily_budget=Decimal("0.5"),
         channel_id=-100,
         tz=MSK,
@@ -116,7 +122,8 @@ async def test_status_format() -> None:
         "Новости по статусам: new — 5, published — 12\n"
         "Проблемных источников: 2\n"
         "Расход DeepSeek за сутки: 0.12 $ из 0.50 $\n"
-        "Последняя публикация: 10.10.2026 11:30"
+        "Последняя публикация: 10.10.2026 11:30\n"
+        "Открытых ошибок нет"
     )
     assert db.cost_since_arg == [datetime(2026, 10, 10, 0, 0, tzinfo=MSK)]
 
@@ -128,6 +135,12 @@ async def test_status_without_publications_and_news() -> None:
     assert "Новости по статусам: нет" in text
     assert "Последняя публикация: нет" in text
     assert "0.00 $ из 0.50 $" in text
+
+
+async def test_status_shows_open_errors() -> None:
+    text = await build_status(_deps(Db(open_incidents=3)))
+    assert "Открытых ошибок: 3 — /errors" in text
+    assert "Открытых ошибок нет" not in text
 
 
 async def test_status_command_through_dispatcher() -> None:
@@ -161,6 +174,7 @@ def test_commands_listed_in_help() -> None:
 def test_real_repositories_fit_protocols() -> None:
     from unittest.mock import MagicMock
 
+    from app.db.repositories.incidents import IncidentRepository
     from app.db.repositories.misc import SettingsRepository
     from app.db.repositories.news import NewsRepository
     from app.db.repositories.posts import ProcessedPostRepository, PublicationRepository
@@ -173,6 +187,7 @@ def test_real_repositories_fit_protocols() -> None:
         post_repo=ProcessedPostRepository,
         publication_repo=PublicationRepository,
         settings_repo=SettingsRepository,
+        incident_repo=IncidentRepository,
         daily_budget=Decimal("1"),
         channel_id=-100,
         tz=MSK,

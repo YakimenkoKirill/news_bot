@@ -9,6 +9,7 @@ COMMANDS: dict[str, str] = {
     "help": "список команд",
     "status": "состояние пайплайна",
     "queue": "подготовленные посты, публикация вне очереди",
+    "errors": "журнал ошибок, упавшие новости",
     "pause": "приостановить обработку и публикацию",
     "resume": "возобновить работу",
     "sources": "источники: включить, выключить, удалить, проверить",
@@ -215,3 +216,7 @@ def incident_line(number: int, kind: str, count: int, when: str, preview: str) -
 def failed_news_line(number: int, title: str, source: str, reason: str) -> str:
     """Строка списка новостей с ошибкой; title и source уже экранированы."""
     return f"{number}. {title} — {source} · {RETRY_REASONS.get(reason, reason)}"
+
+
+STATUS_ERRORS = "Открытых ошибок: {count} — /errors"
+STATUS_NO_ERRORS = "Открытых ошибок нет"

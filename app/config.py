@@ -223,6 +223,7 @@ class AlertsConfig(BaseModel):
     throttle_min: float = Field(ge=0)
     silent_kinds: list[AlertKind]
     max_message_chars: int = Field(ge=1)
+    retention_days: int = Field(ge=1)
 
 
 class SchedulerConfig(BaseModel):
@@ -237,6 +238,7 @@ class SchedulerConfig(BaseModel):
     stale_every_min: float = Field(gt=0)
     review_every_min: float = Field(gt=0)
     heartbeat_every_s: float = Field(gt=0)
+    purge_every_h: float = Field(gt=0)
     misfire_grace_s: int = Field(ge=1)
     failures_before_alert: int = Field(ge=1)
 

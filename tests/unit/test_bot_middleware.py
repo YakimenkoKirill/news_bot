@@ -7,8 +7,16 @@ from aiogram.methods import AnswerCallbackQuery
 from aiogram.types import Update
 
 from app.bot import BotDeps, create_dispatcher, texts
+from app.bot.handlers import errors as errors_handlers
 from app.bot.handlers import queue as queue_handlers
-from app.bot.keyboards import QueueAction, QueueActionType, QueueTab
+from app.bot.keyboards import (
+    ErrorAction,
+    ErrorActionType,
+    ErrorTab,
+    QueueAction,
+    QueueActionType,
+    QueueTab,
+)
 from app.bot.middlewares import AdminOnlyMiddleware
 from app.config import Settings
 from app.logging import setup_logging
@@ -182,3 +190,43 @@ async def test_admin_queue_not_caught_by_fallback() -> None:
     [text] = session.sent_texts()
     assert text.startswith("<b>Очередь публикации</b>")
     assert text != texts.UNKNOWN_COMMAND
+
+
+async def _feed_errors(update: Update) -> FakeSession:
+    from tests.unit.test_bot_errors import Db as ErrorsDb
+    from tests.unit.test_bot_errors import _deps as errors_deps
+
+    deps = BotDeps(
+        settings=Settings.model_construct(
+            telegram_admin_ids=[SETTINGS_ADMIN], bot=bot_config(refusal_cooldown_s=COOLDOWN)
+        ),
+        admin_repo=AdminRepo(),
+        routers=[errors_handlers.create_router()],
+        workflow_data={"errors_deps": errors_deps(ErrorsDb())},
+    )
+    bot, session = make_bot()
+    await create_dispatcher(deps).feed_update(bot, update)
+    return session
+
+
+def _errors_callback(user_id: int) -> Update:
+    data = ErrorAction(action=ErrorActionType.RESOLVE, tab=ErrorTab.OPEN, page=0, id=1)
+    return callback_update(user_id, data.pack())
+
+
+async def test_stranger_refused_on_errors_command() -> None:
+    session = await _feed_errors(message_update(STRANGER, "/errors"))
+    assert session.sent_texts() == [texts.ACCESS_DENIED]
+
+
+async def test_stranger_refused_on_errors_callback() -> None:
+    session = await _feed_errors(_errors_callback(STRANGER))
+    answers = [r for r in session.requests if isinstance(r, AnswerCallbackQuery)]
+    assert [(a.text, a.show_alert) for a in answers] == [(texts.ACCESS_DENIED, True)]
+    assert not [r for r in session.requests if not isinstance(r, AnswerCallbackQuery)]
+
+
+async def test_admin_errors_command_passes() -> None:
+    session = await _feed_errors(message_update(SETTINGS_ADMIN, "/errors"))
+    [text] = session.sent_texts()
+    assert text.startswith("<b>Ошибки</b>")

@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.alerts import AlertService
 from app.bot import BotDeps, create_bot, create_dispatcher
+from app.bot.handlers import errors as errors_handlers
 from app.bot.handlers import keywords as keywords_handlers
 from app.bot.handlers import moderation as moderation_handlers
 from app.bot.handlers import queue as queue_handlers
@@ -24,6 +25,7 @@ from app.bot.handlers import source_add as source_add_handlers
 from app.bot.handlers import sources as sources_handlers
 from app.bot.handlers import status as status_handlers
 from app.bot.handlers.common import setup_bot_commands
+from app.bot.handlers.errors import MUTED_KINDS_SETTING, ErrorsDeps
 from app.bot.handlers.keywords import KeywordsDeps
 from app.bot.handlers.moderation import ModerationDeps
 from app.bot.handlers.queue import QueueDeps
@@ -49,16 +51,20 @@ from app.components import (
 )
 from app.config import Settings, get_settings
 from app.db.base import create_engine, create_session_factory, session_scope
+from app.db.models import Incident
+from app.db.repositories.incidents import IncidentRepository
 from app.db.repositories.misc import AdminRepository, KeywordRepository, SettingsRepository
 from app.db.repositories.news import NewsRepository
 from app.db.repositories.posts import ProcessedPostRepository, PublicationRepository
 from app.db.repositories.sources import SourceRepository
+from app.domain.alerts import AlertEvent, AlertKind
 from app.domain.enums import SourceType
 from app.health import HEARTBEAT_SETTING, heartbeat_value
 from app.logging import setup_logging
 from app.pipeline.ai.budget import BudgetGuard
 from app.pipeline.ai.client import DeepSeekClient
 from app.pipeline.ai.processor import AiProcessor, AiRepos
+from app.pipeline.retry import RetryDeps
 from app.pipeline.stage_ai import AiStageDeps, process_normalized_batch
 from app.pipeline.stage_normalize import NormalizeDeps, process_new_batch
 from app.publisher.media import ImageCheck, check_image
@@ -169,7 +175,28 @@ def build_components(settings: Settings) -> list[Component]:
     )
     bot = create_bot(settings)
     admins = _Admins(settings, scope)
-    alerts = AlertService(bot, admins.ids, settings.alerts)
+    silent_kinds = frozenset(settings.alerts.silent_kinds)
+
+    async def muted_kinds() -> set[AlertKind]:
+        """Виды алертов, заглушённые через /errors (неизвестные значения пропускаются)."""
+        async with scope() as session:
+            stored = await SettingsRepository(session).get(MUTED_KINDS_SETTING, [])
+        kinds: set[AlertKind] = set()
+        for value in stored if isinstance(stored, list) else []:
+            try:
+                kinds.add(AlertKind(value))
+            except ValueError:
+                log.warning("alerts.unknown_muted_kind", kind=str(value))
+        return kinds
+
+    alerts = AlertService(
+        bot,
+        admins.ids,
+        settings.alerts,
+        store=_SessionIncidentStore(scope, settings.alerts.max_message_chars),
+        muted=muted_kinds,
+        silent_kinds=silent_kinds,
+    )
     tz = ZoneInfo(settings.app.timezone)
 
     def health(session: AsyncSession) -> SourceHealthTracker:
@@ -275,6 +302,12 @@ def build_components(settings: Settings) -> list[Component]:
             sources = await SourceRepository(session).list_enabled()
         return len(await stale_tracker.check_stale(sources, now))
 
+    async def purge_incidents(now: datetime) -> int:
+        async with scope() as session:
+            return await IncidentRepository(session).purge_resolved(
+                now - timedelta(days=settings.alerts.retention_days)
+            )
+
     async def heartbeat(now: datetime) -> None:
         async with scope() as session:
             await SettingsRepository(session).set(
@@ -290,6 +323,7 @@ def build_components(settings: Settings) -> list[Component]:
             check_stale=check_stale,
             resend_due=notifier.resend_due,
             heartbeat=heartbeat,
+            purge_incidents=purge_incidents,
             sink=alerts,
         ),
         settings.scheduler,
@@ -306,6 +340,7 @@ def build_components(settings: Settings) -> list[Component]:
                 keywords_handlers.create_router(),
                 moderation_handlers.create_router(),
                 queue_handlers.create_router(),
+                errors_handlers.create_router(),
             ],
             workflow_data={
                 "status_deps": StatusDeps(
@@ -315,6 +350,7 @@ def build_components(settings: Settings) -> list[Component]:
                     post_repo=ProcessedPostRepository,
                     publication_repo=PublicationRepository,
                     settings_repo=SettingsRepository,
+                    incident_repo=IncidentRepository,
                     daily_budget=settings.ai.daily_budget,
                     channel_id=settings.telegram_channel_id,
                     tz=tz,
@@ -361,6 +397,24 @@ def build_components(settings: Settings) -> list[Component]:
                     title_chars=settings.bot.queue_title_chars,
                     clock=lambda: datetime.now(UTC),
                     manual=manual_deps,
+                ),
+                "errors_deps": ErrorsDeps(
+                    session_scope=scope,
+                    incident_repo=IncidentRepository,
+                    news_repo=NewsRepository,
+                    source_repo=SourceRepository,
+                    settings_repo=SettingsRepository,
+                    retry=RetryDeps(
+                        session_scope=scope,
+                        news_repo=NewsRepository,
+                        post_repo=ProcessedPostRepository,
+                    ),
+                    silent_kinds=silent_kinds,
+                    page_size=settings.bot.page_size,
+                    preview_chars=settings.bot.error_preview_chars,
+                    text_limit=settings.publisher.text_limit,
+                    tz=tz,
+                    clock=lambda: datetime.now(UTC),
                 ),
             },
         )
@@ -428,6 +482,22 @@ class _SessionCost:
     async def cost_since(self, dt: datetime) -> Decimal:
         async with self._scope() as session:
             return await ProcessedPostRepository(session).cost_since(dt)
+
+
+class _SessionIncidentStore:
+    """Журнал ошибок для AlertService: каждая запись — в своей транзакции."""
+
+    def __init__(
+        self,
+        scope: Callable[[], AbstractAsyncContextManager[AsyncSession]],
+        max_message_chars: int,
+    ) -> None:
+        self._scope = scope
+        self._max_message_chars = max_message_chars
+
+    async def record(self, event: AlertEvent) -> Incident:
+        async with self._scope() as session:
+            return await IncidentRepository(session).record(event, self._max_message_chars)
 
 
 class _SessionSourceHealth:

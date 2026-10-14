@@ -96,6 +96,7 @@ alerts:
   # виды ошибок, которые только пишутся в журнал /errors и не шлются в чат
   silent_kinds: ["ai_item_failed"]
   max_message_chars: 2000   # сколько символов сообщения хранить в журнале
+  retention_days: 30        # сколько хранить закрытые инциденты
 
 scheduler:
   collect_every_s: 60
@@ -105,6 +106,7 @@ scheduler:
   stale_every_min: 30
   review_every_min: 5
   heartbeat_every_s: 60
+  purge_every_h: 24
   misfire_grace_s: 60
   failures_before_alert: 3
 
