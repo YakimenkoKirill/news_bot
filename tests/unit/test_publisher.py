@@ -93,10 +93,13 @@ async def test_text_post_with_preview() -> None:
     assert bot.photo_calls == []
 
 
-async def test_text_without_link_has_no_preview_options() -> None:
+async def test_text_without_link_disables_preview() -> None:
+    """Без явной ссылки превью отключается: иначе Telegram покажет карточку из подписи."""
     bot = FakeBot()
     await _publisher(bot).send(FittedPost(POST_HTML, use_photo=False), None)
-    assert bot.text_calls[0]["link_preview_options"] is None
+    options = bot.text_calls[0]["link_preview_options"]
+    assert options.is_disabled is True
+    assert options.url is None
 
 
 async def test_photo_flag_without_image_sends_text() -> None:

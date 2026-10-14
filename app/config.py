@@ -181,6 +181,16 @@ class PublisherConfig(BaseModel):
     quiet_hours: list[str]
     max_retries: int = Field(ge=0)
     score_decay_per_h: float = Field(ge=0)
+    footer_mark: str
+    footer_title: str
+    footer_url: str
+
+    @field_validator("footer_url")
+    @classmethod
+    def _check_footer_url(cls, value: str) -> str:
+        if value and not value.startswith(("http://", "https://")):
+            raise ValueError(f"footer_url: нужен адрес http(s), получено {value!r}")
+        return value
 
     @field_validator("quiet_hours")
     @classmethod

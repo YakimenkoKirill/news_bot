@@ -234,7 +234,7 @@ async def publish_item(
     image = await deps.check_image(item.image_url)
     if not image.ok:
         log.info("publish.image_skipped", reason=image.reason)
-    fitted = fit_post(build_post(post, item, source), has_photo=image.ok, cfg=deps.cfg)
+    fitted = fit_post(build_post(post, item, source, deps.cfg), has_photo=image.ok, cfg=deps.cfg)
     publications = deps.publication_repo(session)
     try:
         message_id = await deps.publisher.send(fitted, item.image_url)

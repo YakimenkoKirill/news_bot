@@ -160,7 +160,7 @@ async def _limit(deps: ModerationDeps, post: ProcessedPost, news: ModeratedNews)
         source = await deps.source_repo(session).get(news.source_id)
     if source is None:
         return deps.cfg.text_limit
-    built = build_post(post, news, source)
+    built = build_post(post, news, source, deps.cfg)
     limit = deps.cfg.caption_limit if news.image_url else deps.cfg.text_limit
     return max(summary_budget(built, limit), 0)
 

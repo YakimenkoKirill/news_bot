@@ -142,7 +142,7 @@ async def test_sent_to_all_admins_exactly_as_in_channel() -> None:
     bot = FakeBot()
     await _notifier(db, bot).notify(_post(1))
     assert [kwargs["chat_id"] for _, kwargs in bot.calls] == ADMINS
-    expected = fit_post(build_post(_post(1), News(1), Source()), has_photo=True, cfg=CFG)
+    expected = fit_post(build_post(_post(1), News(1), Source(), CFG), has_photo=True, cfg=CFG)
     for kind, kwargs in bot.calls:
         assert kind == "photo"
         assert kwargs["caption"] == expected.html
