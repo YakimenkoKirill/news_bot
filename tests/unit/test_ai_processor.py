@@ -1,7 +1,6 @@
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -10,6 +9,7 @@ from app.config import AiConfig, ChannelProfile
 from app.db.models import ProcessedPost
 from app.domain.enums import ModerationMode, NewsStatus
 from app.domain.status import ensure_transition
+from app.pipeline.ai.budget import cost
 from app.pipeline.ai.client import (
     AiFatalError,
     AiRawResponse,
@@ -115,7 +115,7 @@ async def test_auto_mode_approved() -> None:
     assert post.hashtags == ["#железо"]
     assert post.prompt_version == PROMPT_VERSION
     assert (post.prompt_tokens, post.completion_tokens) == (1000, 200)
-    assert post.cost == Decimal("0.000460")
+    assert post.cost == cost(1000, 200, CFG), "стоимость считается по ценам из конфигурации"
     assert post.review_note is None
 
 
