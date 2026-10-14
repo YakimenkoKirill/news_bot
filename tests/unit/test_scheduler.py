@@ -8,6 +8,7 @@ from app.domain.alerts import AlertEvent, AlertKind
 from app.scheduler import (
     JOB_AI,
     JOB_COLLECT,
+    JOB_DAILY_REPORT,
     JOB_HEARTBEAT,
     JOB_NORMALIZE,
     JOB_PUBLISH,
@@ -46,6 +47,7 @@ def _deps(sink: Sink | None = None) -> SchedulerDeps:
         resend_due=_ok,
         heartbeat=_ok,
         purge_incidents=_ok,
+        daily_report=_ok,
         sink=sink or Sink(),
         clock=lambda: NOW,
     )
@@ -63,6 +65,7 @@ def test_jobs_and_intervals_from_config() -> None:
         JOB_REVIEW: timedelta(minutes=CFG.review_every_min),
         JOB_HEARTBEAT: timedelta(seconds=CFG.heartbeat_every_s),
         JOB_PURGE: timedelta(hours=CFG.purge_every_h),
+        JOB_DAILY_REPORT: timedelta(minutes=CFG.daily_report_every_min),
     }
     assert set(jobs) == set(expected)
     for job_id, interval in expected.items():
@@ -161,6 +164,7 @@ async def test_scheduled_wrapper_runs_job(job_id: str) -> None:
         resend_due=_ok,
         heartbeat=_ok,
         purge_incidents=_ok,
+        daily_report=_ok,
         sink=Sink(),
         clock=lambda: NOW,
     )

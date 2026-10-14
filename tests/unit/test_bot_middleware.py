@@ -9,6 +9,7 @@ from aiogram.types import Update
 from app.bot import BotDeps, create_dispatcher, texts
 from app.bot.handlers import errors as errors_handlers
 from app.bot.handlers import queue as queue_handlers
+from app.bot.handlers import report as report_handlers
 from app.bot.keyboards import (
     ErrorAction,
     ErrorActionType,
@@ -16,6 +17,7 @@ from app.bot.keyboards import (
     QueueAction,
     QueueActionType,
     QueueTab,
+    ReportAction,
 )
 from app.bot.middlewares import AdminOnlyMiddleware
 from app.config import Settings
@@ -23,6 +25,8 @@ from app.logging import setup_logging
 from tests.bot_helpers import FakeSession, callback_update, make_bot, message_update
 from tests.config_helpers import bot_config
 from tests.unit.test_bot_queue import Db, _deps
+from tests.unit.test_bot_report import Builder
+from tests.unit.test_bot_report import _deps as report_deps
 
 SETTINGS_ADMIN = 111
 DB_ADMIN = 222
@@ -230,3 +234,31 @@ async def test_admin_errors_command_passes() -> None:
     session = await _feed_errors(message_update(SETTINGS_ADMIN, "/errors"))
     [text] = session.sent_texts()
     assert text.startswith("<b>Ошибки</b>")
+
+
+async def _feed_report(update: Update, monkeypatch: pytest.MonkeyPatch) -> FakeSession:
+    monkeypatch.setattr(report_handlers, "build_report", Builder(["отчёт"]))
+    deps = BotDeps(
+        settings=Settings.model_construct(
+            telegram_admin_ids=[SETTINGS_ADMIN], bot=bot_config(refusal_cooldown_s=COOLDOWN)
+        ),
+        admin_repo=AdminRepo(),
+        routers=[report_handlers.create_router()],
+        workflow_data={"report_deps": report_deps()},
+    )
+    bot, session = make_bot()
+    await create_dispatcher(deps).feed_update(bot, update)
+    return session
+
+
+async def test_stranger_refused_on_report_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = await _feed_report(message_update(STRANGER, "/report"), monkeypatch)
+    assert session.sent_texts() == [texts.ACCESS_DENIED]
+
+
+async def test_stranger_refused_on_report_callback(monkeypatch: pytest.MonkeyPatch) -> None:
+    update = callback_update(STRANGER, ReportAction(period="week").pack())
+    session = await _feed_report(update, monkeypatch)
+    answers = [r for r in session.requests if isinstance(r, AnswerCallbackQuery)]
+    assert [(a.text, a.show_alert) for a in answers] == [(texts.ACCESS_DENIED, True)]
+    assert not [r for r in session.requests if not isinstance(r, AnswerCallbackQuery)]

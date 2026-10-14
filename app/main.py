@@ -21,6 +21,7 @@ from app.bot.handlers import errors as errors_handlers
 from app.bot.handlers import keywords as keywords_handlers
 from app.bot.handlers import moderation as moderation_handlers
 from app.bot.handlers import queue as queue_handlers
+from app.bot.handlers import report as report_handlers
 from app.bot.handlers import source_add as source_add_handlers
 from app.bot.handlers import sources as sources_handlers
 from app.bot.handlers import status as status_handlers
@@ -69,7 +70,15 @@ from app.pipeline.stage_ai import AiStageDeps, process_normalized_batch
 from app.pipeline.stage_normalize import NormalizeDeps, process_new_batch
 from app.publisher.media import ImageCheck, check_image
 from app.publisher.publisher import Publisher
-from app.publisher.stage_publish import ManualPublishDeps, PublishDeps, publish_due
+from app.publisher.stage_publish import (
+    PAUSED_SETTING,
+    ManualPublishDeps,
+    PublishDeps,
+    publish_due,
+)
+from app.reports.daily import DailyContext
+from app.reports.sender import DailyReportSender
+from app.reports.service import ReportDeps
 from app.scheduler import SchedulerDeps, build_scheduler
 
 log = structlog.get_logger(__name__)
@@ -295,6 +304,30 @@ def build_components(settings: Settings) -> list[Component]:
         check_image=image_check,
         cfg=settings.publisher,
     )
+
+    async def is_paused(session: AsyncSession) -> bool:
+        return bool(await SettingsRepository(session).get(PAUSED_SETTING, False))
+
+    report_deps = ReportDeps(
+        session_scope=scope,
+        context=lambda: DailyContext(
+            tz=tz,
+            daily_budget=settings.ai.daily_budget,
+            decay_per_h=settings.publisher.score_decay_per_h,
+            top_posts=settings.daily_report.top_posts,
+            channel_id=settings.telegram_channel_id,
+        ),
+        cfg=settings.daily_report,
+        metrics=settings.metrics,
+        text_limit=settings.publisher.text_limit,
+        budget=settings.ai.daily_budget,
+        tz=tz,
+        clock=lambda: datetime.now(UTC),
+        paused=is_paused,
+    )
+    report_sender = DailyReportSender(
+        bot, admins.ids, SettingsRepository, report_deps, settings.daily_report
+    )
     stale_tracker = SourceHealthTracker(_SessionSourceHealth(scope), alerts, settings.collectors)
 
     async def check_stale(now: datetime) -> int:
@@ -324,6 +357,7 @@ def build_components(settings: Settings) -> list[Component]:
             resend_due=notifier.resend_due,
             heartbeat=heartbeat,
             purge_incidents=purge_incidents,
+            daily_report=report_sender.send_due,
             sink=alerts,
         ),
         settings.scheduler,
@@ -341,6 +375,7 @@ def build_components(settings: Settings) -> list[Component]:
                 moderation_handlers.create_router(),
                 queue_handlers.create_router(),
                 errors_handlers.create_router(),
+                report_handlers.create_router(),
             ],
             workflow_data={
                 "status_deps": StatusDeps(
@@ -416,6 +451,7 @@ def build_components(settings: Settings) -> list[Component]:
                     tz=tz,
                     clock=lambda: datetime.now(UTC),
                 ),
+                "report_deps": report_deps,
             },
         )
     )

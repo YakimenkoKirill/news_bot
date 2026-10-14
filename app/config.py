@@ -239,6 +239,7 @@ class SchedulerConfig(BaseModel):
     review_every_min: float = Field(gt=0)
     heartbeat_every_s: float = Field(gt=0)
     purge_every_h: float = Field(gt=0)
+    daily_report_every_min: float = Field(gt=0)
     misfire_grace_s: int = Field(ge=1)
     failures_before_alert: int = Field(ge=1)
 
@@ -248,10 +249,26 @@ class DailyReportConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    enabled: bool
+    send_at: str
     top_posts: int = Field(ge=1)
     top_sources: int = Field(ge=1)
     source_name_chars: int = Field(ge=1)
     budget_warn_share: float = Field(gt=0, le=1)
+
+    @field_validator("send_at")
+    @classmethod
+    def _check_send_at(cls, value: str) -> str:
+        try:
+            datetime.strptime(value, QUIET_HOURS_FORMAT)
+        except ValueError as exc:
+            raise ValueError(f"send_at: время {value!r} не в формате ЧЧ:ММ") from exc
+        return value
+
+    @property
+    def send_time(self) -> time:
+        """Время отправки отчёта в локальном времени канала."""
+        return datetime.strptime(self.send_at, QUIET_HOURS_FORMAT).time()
 
 
 class MetricsConfig(BaseModel):

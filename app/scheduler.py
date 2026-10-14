@@ -28,6 +28,7 @@ JOB_STALE = "check_stale"
 JOB_REVIEW = "resend_due"
 JOB_HEARTBEAT = "heartbeat"
 JOB_PURGE = "purge_incidents"
+JOB_DAILY_REPORT = "daily_report"
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,7 @@ class SchedulerDeps:
         resend_due: повторная отправка отложенных постов на модерацию.
         heartbeat: запись heartbeat_at в настройки.
         purge_incidents: удаление старых закрытых инцидентов журнала.
+        daily_report: ежедневная отправка отчёта администраторам.
         sink: Получатель алертов job_failed.
         clock: Источник текущего времени.
     """
@@ -57,6 +59,7 @@ class SchedulerDeps:
     resend_due: Job
     heartbeat: Job
     purge_incidents: Job
+    daily_report: Job
     sink: AlertSink
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
 
@@ -149,6 +152,11 @@ def build_scheduler(
         (JOB_REVIEW, deps.resend_due, IntervalTrigger(minutes=cfg.review_every_min)),
         (JOB_HEARTBEAT, deps.heartbeat, IntervalTrigger(seconds=cfg.heartbeat_every_s)),
         (JOB_PURGE, deps.purge_incidents, IntervalTrigger(hours=cfg.purge_every_h)),
+        (
+            JOB_DAILY_REPORT,
+            deps.daily_report,
+            IntervalTrigger(minutes=cfg.daily_report_every_min),
+        ),
     ]
     for job_id, job, trigger in jobs:
         scheduler.add_job(

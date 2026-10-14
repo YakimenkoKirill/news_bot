@@ -107,10 +107,13 @@ scheduler:
   review_every_min: 5
   heartbeat_every_s: 60
   purge_every_h: 24
+  daily_report_every_min: 5
   misfire_grace_s: 60
   failures_before_alert: 3
 
 daily_report:
+  enabled: true
+  send_at: "23:30"        # когда присылать отчёт за день (ЧЧ:ММ, app.timezone)
   top_posts: 3            # сколько лучших постов дня показывать в отчёте
   top_sources: 10         # сколько источников показывать в таблице, остальные — строкой «прочие»
   source_name_chars: 18   # до скольких символов обрезать имя источника в таблице
