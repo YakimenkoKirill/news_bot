@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from app import config
 from app.config import Settings, get_settings, load_settings
+from app.domain.alerts import AlertKind
 
 REQUIRED_ENV = {
     "DATABASE_URL": "postgresql+asyncpg://user:pass@localhost:5432/news",
@@ -147,3 +148,45 @@ def test_secrets_not_in_repr(configs_dir: Path) -> None:
 def test_repository_configs_are_valid() -> None:
     for env in config.ENVIRONMENTS:
         assert load_settings(config.CONFIGS_DIR, env).app.timezone
+
+
+def test_alerts_silent_kinds_and_message_limit(configs_dir: Path) -> None:
+    settings = load_settings(configs_dir)
+    assert settings.alerts.silent_kinds == [AlertKind.AI_ITEM_FAILED]
+    assert settings.alerts.max_message_chars == 2000
+
+
+def test_alerts_unknown_silent_kind_rejected(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text(
+        'alerts:\n  silent_kinds: ["no_such_kind"]\n', encoding="utf-8"
+    )
+    with pytest.raises(ValidationError, match="silent_kinds"):
+        load_settings(configs_dir, "prod")
+
+
+def test_alerts_message_limit_must_be_positive(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text("alerts:\n  max_message_chars: 0\n", encoding="utf-8")
+    with pytest.raises(ValidationError, match="max_message_chars"):
+        load_settings(configs_dir, "prod")
+
+
+def test_alerts_retention_and_purge_interval(configs_dir: Path) -> None:
+    settings = load_settings(configs_dir)
+    assert settings.alerts.retention_days == 30
+    assert settings.scheduler.purge_every_h == 24
+
+
+def test_retention_days_must_be_positive(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text("alerts:\n  retention_days: 0\n", encoding="utf-8")
+    with pytest.raises(ValidationError, match="retention_days"):
+        load_settings(configs_dir, "prod")
+
+
+def test_purge_interval_must_be_positive(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text("scheduler:\n  purge_every_h: 0\n", encoding="utf-8")
+    with pytest.raises(ValidationError, match="purge_every_h"):
+        load_settings(configs_dir, "prod")
+
+
+def test_bot_error_preview_chars(configs_dir: Path) -> None:
+    assert load_settings(configs_dir).bot.error_preview_chars == 80

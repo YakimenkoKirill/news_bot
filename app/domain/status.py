@@ -18,7 +18,7 @@ ALLOWED_TRANSITIONS: Mapping[NewsStatus, frozenset[NewsStatus]] = {
     S.PENDING_REVIEW: frozenset({S.APPROVED, S.REJECTED}),
     S.APPROVED: frozenset({S.SCHEDULED, S.PUBLISHED, S.FAILED}),
     S.SCHEDULED: frozenset({S.PUBLISHED, S.FAILED}),
-    S.FAILED: frozenset({S.APPROVED}),
+    S.FAILED: frozenset({S.APPROVED, S.NORMALIZED}),
     S.DUPLICATE: frozenset(),
     S.FILTERED: frozenset(),
     S.REJECTED: frozenset(),

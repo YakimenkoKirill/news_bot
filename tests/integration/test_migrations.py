@@ -65,7 +65,7 @@ def test_repeated_upgrade_is_noop(clean_db: Config, test_database_url: str) -> N
     head = ScriptDirectory.from_config(clean_db).get_current_head()
     command.upgrade(clean_db, "head")
     command.upgrade(clean_db, "head")
-    assert _current_revision(test_database_url) == head == "0001"
+    assert _current_revision(test_database_url) == head == "0002"
 
 
 def test_news_items_indexes(clean_db: Config, test_database_url: str) -> None:
@@ -79,6 +79,26 @@ def test_news_items_indexes(clean_db: Config, test_database_url: str) -> None:
     assert found["ix_news_items_content_hash"] == (["content_hash"], False)
     assert found["ix_news_items_status_created_at"] == (["status", "created_at"], False)
     assert found["ix_news_items_cluster_id"] == (["cluster_id"], False)
+
+
+def test_incidents_table_added_in_0002(clean_db: Config, test_database_url: str) -> None:
+    command.upgrade(clean_db, "head")
+    assert "incidents" in _table_names(test_database_url)
+    indexes = _with_connection(
+        test_database_url, lambda conn: inspect(conn).get_indexes("incidents")
+    )
+    found = {str(index["name"]): index for index in indexes}
+    unique_key = found["uq_incidents_open_key"]
+    assert (unique_key["column_names"], unique_key["unique"]) == (["key"], True)
+    assert "resolved_at IS NULL" in str(unique_key.get("dialect_options", {}))
+    assert found["ix_incidents_resolved_last_seen"]["column_names"] == [
+        "resolved_at",
+        "last_seen_at",
+    ]
+
+    command.downgrade(clean_db, "0001")
+    assert "incidents" not in _table_names(test_database_url)
+    assert _current_revision(test_database_url) == "0001"
 
 
 def test_autogenerate_finds_no_differences(clean_db: Config, test_database_url: str) -> None:

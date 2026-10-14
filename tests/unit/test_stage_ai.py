@@ -124,6 +124,7 @@ class FakeProcessor:
                 NewsStatus.APPROVED: [NewsStatus.PROCESSED, NewsStatus.APPROVED],
                 NewsStatus.PENDING_REVIEW: [NewsStatus.PROCESSED, NewsStatus.PENDING_REVIEW],
                 NewsStatus.FILTERED: [NewsStatus.FILTERED],
+                NewsStatus.FAILED: [NewsStatus.FAILED],
             }[outcome]
             current = NewsStatus.NORMALIZED
             for status in path:
@@ -165,11 +166,14 @@ class Notifier:
 
 
 class Sink:
-    def __init__(self) -> None:
+    def __init__(self, fail: bool = False) -> None:
         self.events: list[AlertEvent] = []
+        self.fail = fail
 
     async def emit(self, event: AlertEvent) -> None:
         self.events.append(event)
+        if self.fail:
+            raise RuntimeError("telegram down")
 
 
 @dataclass
@@ -188,12 +192,13 @@ def _env(
     budget: Budget | None = None,
     notifier: Notifier | None = None,
     concurrency: int = 2,
+    sink: Sink | None = None,
 ) -> Env:
     db = Db(news={i: News(i) for i in range(1, count + 1)})
     tracker = Tracker()
     budget = budget or Budget()
     notifier = notifier or Notifier()
-    sink = Sink()
+    sink = sink or Sink()
 
     @asynccontextmanager
     async def scope() -> AsyncIterator[Db]:
@@ -285,6 +290,46 @@ async def test_one_item_error_does_not_break_others() -> None:
     assert report.statuses == {NewsStatus.APPROVED: 2}
     assert report.stopped is None
     assert env.db.news[2].status is NewsStatus.NORMALIZED
+
+
+def _item_failed(env: Env) -> list[AlertEvent]:
+    return [e for e in env.sink.events if e.kind is AlertKind.AI_ITEM_FAILED]
+
+
+async def test_failed_status_alerts_item_failed() -> None:
+    env = _env(2, plan={1: NewsStatus.FAILED})
+    report = await process_normalized_batch(NOW, env.deps)
+    assert report.statuses == {NewsStatus.FAILED: 1, NewsStatus.APPROVED: 1}
+
+    [event] = _item_failed(env)
+    assert event.key == "ai_item_failed:1"
+    assert "bad_ai_response" in event.message
+    assert "id 1" in event.message
+    assert event.created_at == NOW
+
+
+async def test_item_exception_alerts_item_failed() -> None:
+    env = _env(2, plan={2: RuntimeError("db hiccup")})
+    report = await process_normalized_batch(NOW, env.deps)
+    assert report.errors == 1
+
+    [event] = _item_failed(env)
+    assert event.key == "ai_item_failed:2"
+    assert "db hiccup" in event.message
+
+
+async def test_alert_error_does_not_break_batch() -> None:
+    env = _env(3, plan={2: NewsStatus.FAILED}, sink=Sink(fail=True))
+    report = await process_normalized_batch(NOW, env.deps)
+    assert report.statuses == {NewsStatus.FAILED: 1, NewsStatus.APPROVED: 2}
+    assert report.errors == 0
+    assert len(_item_failed(env)) == 1
+
+
+async def test_successful_items_do_not_alert() -> None:
+    env = _env(3, plan={2: NewsStatus.FILTERED, 3: NewsStatus.PENDING_REVIEW})
+    await process_normalized_batch(NOW, env.deps)
+    assert _item_failed(env) == []
 
 
 async def test_concurrency_limit() -> None:

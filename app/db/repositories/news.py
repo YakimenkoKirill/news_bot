@@ -385,6 +385,37 @@ class NewsRepository:
         )
         return (await self._session.scalars(stmt)).one_or_none() is not None
 
+    async def list_failed(self, limit: int, offset: int) -> list[tuple[NewsItem, bool]]:
+        """Новости в статусе failed, сначала новые, с признаком «есть пересказ».
+
+        Returns:
+            Пары (новость, есть ли ProcessedPost).
+
+        Raises:
+            ValueError: limit <= 0 или offset < 0.
+        """
+        if limit <= 0:
+            raise ValueError(f"limit должен быть положительным, получено {limit}")
+        if offset < 0:
+            raise ValueError(f"offset не может быть отрицательным, получено {offset}")
+        stmt = (
+            select(NewsItem, ProcessedPost.id.is_not(None))
+            .outerjoin(ProcessedPost, ProcessedPost.news_item_id == NewsItem.id)
+            .where(NewsItem.status == NewsStatus.FAILED)
+            .order_by(NewsItem.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        rows = (await self._session.execute(stmt)).all()
+        return [(news, bool(has_post)) for news, has_post in rows]
+
+    async def count_failed(self) -> int:
+        """Число новостей в статусе failed."""
+        stmt = (
+            select(func.count()).select_from(NewsItem).where(NewsItem.status == NewsStatus.FAILED)
+        )
+        return int(await self._session.scalar(stmt) or 0)
+
     async def count_by_status(self) -> dict[NewsStatus, int]:
         """Возвращает число новостей в каждом статусе, включая нулевые."""
         stmt = select(NewsItem.status, func.count()).group_by(NewsItem.status)

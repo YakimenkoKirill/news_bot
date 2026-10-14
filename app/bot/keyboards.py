@@ -284,3 +284,153 @@ def queue_confirm_keyboard(news_id: int, tab: QueueTab, page: int) -> InlineKeyb
     )
     builder.adjust(2)
     return builder.as_markup()
+
+
+class ErrorTab(StrEnum):
+    """Вкладка журнала ошибок /errors."""
+
+    OPEN = "open"
+    ALL = "all"
+    NEWS = "news"
+
+
+ERROR_TAB_LABELS = {
+    ErrorTab.OPEN: "Открытые",
+    ErrorTab.ALL: "Все",
+    ErrorTab.NEWS: "Новости",
+}
+ERROR_OPEN_PER_ROW = 5
+
+
+class ErrorActionType(StrEnum):
+    """Действия в журнале ошибок."""
+
+    PAGE = "page"
+    OPEN = "open"
+    BACK = "back"
+    RESOLVE = "resolve"
+    RESOLVE_ALL = "resolve_all"
+    CONFIRM_ALL = "confirm_all"
+    MUTE = "mute"
+    RETRY = "retry"
+
+
+class ErrorAction(CallbackData, prefix="er"):
+    """Нажатие кнопки в журнале ошибок; id — инцидент или новость."""
+
+    action: ErrorActionType
+    tab: ErrorTab
+    page: int
+    id: int = 0
+
+
+def errors_keyboard(
+    numbered_ids: Sequence[tuple[int, int]],
+    tab: ErrorTab,
+    page: int,
+    has_prev: bool,
+    has_next: bool,
+    can_resolve_all: bool,
+) -> InlineKeyboardMarkup:
+    """Кнопки страницы /errors: «🔎 N» на запись, вкладки, навигация и «Решить все».
+
+    Args:
+        numbered_ids: Пары (номер в списке, id записи).
+        tab: Текущая вкладка.
+        page: Текущая страница.
+        has_prev: Есть предыдущая страница.
+        has_next: Есть следующая страница.
+        can_resolve_all: Показывать ли кнопку «Решить все».
+    """
+    builder = InlineKeyboardBuilder()
+    for number, item_id in numbered_ids:
+        builder.button(
+            text=f"🔎 {number}",
+            callback_data=ErrorAction(action=ErrorActionType.OPEN, tab=tab, page=page, id=item_id),
+        )
+    full_rows, rest = divmod(len(numbered_ids), ERROR_OPEN_PER_ROW)
+    row_sizes = [ERROR_OPEN_PER_ROW] * full_rows + ([rest] if rest else [])
+    for item in ErrorTab:
+        mark = QUEUE_ACTIVE_MARK if item is tab else ""
+        builder.button(
+            text=f"{mark}{ERROR_TAB_LABELS[item]}",
+            callback_data=ErrorAction(action=ErrorActionType.PAGE, tab=item, page=0),
+        )
+    row_sizes.append(len(ErrorTab))
+    if can_resolve_all:
+        builder.button(
+            text="✅ Решить все",
+            callback_data=ErrorAction(action=ErrorActionType.RESOLVE_ALL, tab=tab, page=page),
+        )
+        row_sizes.append(1)
+    nav = 0
+    if has_prev:
+        builder.button(
+            text="◀️",
+            callback_data=ErrorAction(action=ErrorActionType.PAGE, tab=tab, page=page - 1),
+        )
+        nav += 1
+    if has_next:
+        builder.button(
+            text="▶️",
+            callback_data=ErrorAction(action=ErrorActionType.PAGE, tab=tab, page=page + 1),
+        )
+        nav += 1
+    if nav:
+        row_sizes.append(nav)
+    builder.adjust(*row_sizes)
+    return builder.as_markup()
+
+
+def incident_keyboard(
+    incident_id: int, kind_muted: bool, is_open: bool, tab: ErrorTab, page: int
+) -> InlineKeyboardMarkup:
+    """Кнопки карточки инцидента: «Решено», переключение чата и возврат к списку."""
+    builder = InlineKeyboardBuilder()
+    if is_open:
+        builder.button(
+            text="✅ Решено",
+            callback_data=ErrorAction(
+                action=ErrorActionType.RESOLVE, tab=tab, page=page, id=incident_id
+            ),
+        )
+    builder.button(
+        text="🔔 Присылать в чат" if kind_muted else "🔕 Не присылать в чат",
+        callback_data=ErrorAction(action=ErrorActionType.MUTE, tab=tab, page=page, id=incident_id),
+    )
+    builder.button(
+        text="◀️ К списку",
+        callback_data=ErrorAction(action=ErrorActionType.BACK, tab=tab, page=page),
+    )
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def failed_news_keyboard(news_id: int, tab: ErrorTab, page: int) -> InlineKeyboardMarkup:
+    """Кнопки карточки упавшей новости."""
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="🔁 Повторить",
+        callback_data=ErrorAction(action=ErrorActionType.RETRY, tab=tab, page=page, id=news_id),
+    )
+    builder.button(
+        text="◀️ К списку",
+        callback_data=ErrorAction(action=ErrorActionType.BACK, tab=tab, page=page),
+    )
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def confirm_resolve_all_keyboard(tab: ErrorTab, page: int) -> InlineKeyboardMarkup:
+    """Подтверждение закрытия всех открытых инцидентов."""
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="Да, закрыть все",
+        callback_data=ErrorAction(action=ErrorActionType.CONFIRM_ALL, tab=tab, page=page),
+    )
+    builder.button(
+        text="Отмена",
+        callback_data=ErrorAction(action=ErrorActionType.BACK, tab=tab, page=page),
+    )
+    builder.adjust(2)
+    return builder.as_markup()
