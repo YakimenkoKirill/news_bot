@@ -31,6 +31,7 @@ EXPECTED_COLUMNS = {
         "published_at",
         "status",
         "error",
+        "initiated_by",
     },
     "keywords": {"id", "word", "type"},
     "admins": {"telegram_id", "role", "created_at"},

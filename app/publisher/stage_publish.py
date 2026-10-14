@@ -199,7 +199,12 @@ async def publish_due(now: datetime, deps: PublishDeps) -> PublishReport:
 
 
 async def publish_item(
-    item: QueuedNews, now: datetime, session: Any, deps: PublishDeps
+    item: QueuedNews,
+    now: datetime,
+    session: Any,
+    deps: PublishDeps,
+    *,
+    initiated_by: int | None = None,
 ) -> PublishReport:
     """Публикует захваченную новость в открытой транзакции.
 
@@ -212,6 +217,8 @@ async def publish_item(
         now: Текущий момент.
         session: Сессия БД вызывающего.
         deps: Зависимости стадии публикации.
+        initiated_by: Telegram ID администратора при публикации вне очереди
+            (None — обычная публикация по расписанию).
 
     Returns:
         Отчёт о публикации.
@@ -238,6 +245,7 @@ async def publish_item(
                 channel_id=deps.channel_id,
                 status=PublicationStatus.FAILED,
                 error=str(exc),
+                initiated_by=initiated_by,
             )
         )
         await news_repo.set_status(item.id, item.status, NewsStatus.FAILED, REASON_PUBLISH_ERROR)
@@ -259,6 +267,7 @@ async def publish_item(
             status=PublicationStatus.SENT,
             message_id=message_id,
             published_at=now,
+            initiated_by=initiated_by,
         )
     )
     await news_repo.set_status(item.id, item.status, NewsStatus.PUBLISHED)
@@ -327,7 +336,7 @@ async def publish_now(
         Результат: published, not_found, busy, already_done или failed.
     """
     async with deps.publish.session_scope() as session:
-        result = await _publish_now(news_id, now, session, deps)
+        result = await _publish_now(news_id, now, session, deps, initiator_id)
     log.info(
         "publish.manual", news_id=news_id, initiator_id=initiator_id, outcome=result.outcome.value
     )
@@ -335,7 +344,7 @@ async def publish_now(
 
 
 async def _publish_now(
-    news_id: int, now: datetime, session: Any, deps: ManualPublishDeps
+    news_id: int, now: datetime, session: Any, deps: ManualPublishDeps, initiator_id: int
 ) -> ManualPublishResult:
     news_repo = deps.news_repo(session)
     item = await news_repo.claim_one(news_id, MANUAL_STATUSES)
@@ -350,7 +359,7 @@ async def _publish_now(
     if item.status is NewsStatus.PENDING_REVIEW:
         await news_repo.set_status(item.id, NewsStatus.PENDING_REVIEW, NewsStatus.APPROVED)
     with bind_context(news_id=item.id):
-        report = await publish_item(item, now, session, deps.publish)
+        report = await publish_item(item, now, session, deps.publish, initiated_by=initiator_id)
     if report.error is not None:
         return ManualPublishResult(
             ManualOutcome.FAILED, news_id, status=NewsStatus.FAILED, error=report.error

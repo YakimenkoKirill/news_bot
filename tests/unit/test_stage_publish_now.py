@@ -230,6 +230,7 @@ async def test_publishes_approved_immediately() -> None:
     assert env.db.news[1].status is S.PUBLISHED
     [pub] = env.db.publications
     assert (pub.status, pub.message_id, pub.published_at) == (PublicationStatus.SENT, 9001, NOON)
+    assert pub.initiated_by == ADMIN
     fitted, _, link = env.sender.calls[0]
     assert link is None
     assert "<b>Заголовок</b>" in fitted.html
@@ -293,6 +294,7 @@ async def test_publish_error_marks_failed() -> None:
     assert env.db.reasons[1] == "publish_error"
     [pub] = env.db.publications
     assert pub.status is PublicationStatus.FAILED
+    assert pub.initiated_by == ADMIN
     [event] = env.sink.events
     assert event.kind is AlertKind.PUBLISH_ERROR
 
