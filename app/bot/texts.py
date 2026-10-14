@@ -154,3 +154,64 @@ QUEUE_PUBLISH_BUSY = "Пост сейчас публикуется — обно�
 QUEUE_PUBLISH_DONE = "Уже обработано: {status}"
 QUEUE_PUBLISH_NOT_FOUND = "Пост не найден"
 QUEUE_PUBLISH_FAILED = "❌ Не удалось опубликовать: {error}"
+
+ALERT_KIND_LABELS = {
+    "source_down": "источник не отвечает",
+    "source_stale": "источник молчит",
+    "ai_down": "модель недоступна",
+    "budget_exceeded": "бюджет исчерпан",
+    "publish_error": "ошибка публикации",
+    "job_failed": "сбой фоновой задачи",
+    "ai_item_failed": "новость не обработана",
+}
+
+ERRORS_TITLE = "<b>Ошибки</b> · открыто {count}"
+ERRORS_NEWS_TITLE = "<b>Новости с ошибкой</b> · {count}"
+ERRORS_PAGE = "страница {page} из {pages}"
+ERRORS_EMPTY = "Ошибок нет ✅"
+ERRORS_NEWS_EMPTY = "Новостей с ошибкой нет ✅"
+ERRORS_MUTED_MARK = "🔕 не присылается в чат"
+ERRORS_ALREADY_RESOLVED = "Уже решено"
+ERRORS_RESOLVED_COUNT = "Закрыто: {count}"
+ERRORS_CONFIRM_ALL = "Закрыть все открытые ошибки?"
+ERRORS_KIND_FROM_CONFIG = "Вид отключён в configs (alerts.silent_kinds)"
+ERRORS_INCIDENT_NOT_FOUND = "Инцидент не найден"
+ERRORS_OPEN_STATUS = "открыта"
+ERRORS_RESOLVED_STATUS = "решена {who} {when}"
+
+RETRY_REASONS = {
+    "bad_ai_response": "модель вернула некорректный ответ",
+    "publish_error": "не удалось опубликовать",
+    "no_processed_post": "нет пересказа",
+}
+RETRY_HINT_TO_AI = "«Повторить» отправит новость в модель заново."
+RETRY_HINT_TO_QUEUE = "«Повторить» вернёт пост в очередь публикации."
+RETRY_RESULTS = {
+    "to_ai": "Новость снова отправлена в модель",
+    "to_queue": "Новость снова в очереди публикации",
+    "not_failed": "Новость уже не в статусе failed: {status}",
+    "not_found": "Новость не найдена",
+}
+
+
+def error_time(moment: datetime, today: datetime) -> str:
+    """Время события: «ЧЧ:ММ» сегодня, иначе «ДД.ММ ЧЧ:ММ» (оба в поясе канала)."""
+    if moment.date() == today.date():
+        return f"{moment:%H:%M}"
+    return f"{moment:%d.%m %H:%M}"
+
+
+def kind_emoji(kind: str) -> str:
+    """Эмодзи вида из шаблона алерта."""
+    return ALERT_TEMPLATES[kind].split(" ", 1)[0]
+
+
+def incident_line(number: int, kind: str, count: int, when: str, preview: str) -> str:
+    """Строка списка инцидентов; preview уже экранирован и обрезан."""
+    label = ALERT_KIND_LABELS[kind]
+    return f"{number}. {kind_emoji(kind)} {label} ×{count} · {when} — {preview}"
+
+
+def failed_news_line(number: int, title: str, source: str, reason: str) -> str:
+    """Строка списка новостей с ошибкой; title и source уже экранированы."""
+    return f"{number}. {title} — {source} · {RETRY_REASONS.get(reason, reason)}"

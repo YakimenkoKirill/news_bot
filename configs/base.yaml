@@ -86,6 +86,7 @@ bot:
   page_size: 10
   max_keyword_chars: 50
   queue_title_chars: 60   # длина заголовка поста в списке /queue
+  error_preview_chars: 80 # длина начала сообщения в списке /errors
 
 moderation:
   snooze_min: 60

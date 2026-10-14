@@ -279,6 +279,7 @@ class BotConfig(BaseModel):
     page_size: int = Field(ge=1)
     max_keyword_chars: int = Field(ge=1)
     queue_title_chars: int = Field(ge=1)
+    error_preview_chars: int = Field(ge=1)
 
 
 class _YamlSource(PydanticBaseSettingsSource):
