@@ -243,6 +243,14 @@ class SchedulerConfig(BaseModel):
     failures_before_alert: int = Field(ge=1)
 
 
+class DailyReportConfig(BaseModel):
+    """Секция daily_report: ежедневный отчёт в боте."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    top_posts: int = Field(ge=1)
+
+
 class MetricsConfig(BaseModel):
     """Секция metrics: цели MVP для отчёта по тестовому прогону."""
 
@@ -336,6 +344,7 @@ class Settings(BaseSettings):
     moderation: ModerationConfig
     alerts: AlertsConfig
     scheduler: SchedulerConfig
+    daily_report: DailyReportConfig
     metrics: MetricsConfig
     health: HealthConfig
     backup: BackupConfig
