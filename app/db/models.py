@@ -203,6 +203,36 @@ class Admin(Base):
     created_at: Mapped[datetime] = mapped_column(_tz(), server_default=func.now())
 
 
+class Incident(Base):
+    """Инцидент журнала ошибок: события одного вида с одним key, пока он открыт.
+
+    Повтор события с тем же key увеличивает count у открытого инцидента; после
+    закрытия (resolved_at) следующее событие открывает новый инцидент. Поэтому
+    уникальность key — частичная, только среди открытых.
+    """
+
+    __tablename__ = "incidents"
+    __table_args__ = (
+        Index(
+            "uq_incidents_open_key",
+            "key",
+            unique=True,
+            postgresql_where=text("resolved_at IS NULL"),
+        ),
+        Index("ix_incidents_resolved_last_seen", "resolved_at", "last_seen_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(ENUM_LENGTH))
+    key: Mapped[str] = mapped_column(String(255))
+    message: Mapped[str] = mapped_column(Text)
+    count: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"))
+    first_seen_at: Mapped[datetime] = mapped_column(_tz())
+    last_seen_at: Mapped[datetime] = mapped_column(_tz())
+    resolved_at: Mapped[datetime | None] = mapped_column(_tz(), nullable=True)
+    resolved_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+
 class Setting(Base):
     """Изменяемая во время работы настройка (например, пауза публикаций)."""
 

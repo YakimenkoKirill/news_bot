@@ -35,6 +35,17 @@ EXPECTED_COLUMNS = {
     "keywords": {"id", "word", "type"},
     "admins": {"telegram_id", "role", "created_at"},
     "settings": {"key", "value", "updated_at"},
+    "incidents": {
+        "id",
+        "kind",
+        "key",
+        "message",
+        "count",
+        "first_seen_at",
+        "last_seen_at",
+        "resolved_at",
+        "resolved_by",
+    },
 }
 
 
