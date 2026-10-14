@@ -249,6 +249,9 @@ class DailyReportConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     top_posts: int = Field(ge=1)
+    top_sources: int = Field(ge=1)
+    source_name_chars: int = Field(ge=1)
+    budget_warn_share: float = Field(gt=0, le=1)
 
 
 class MetricsConfig(BaseModel):
