@@ -7,7 +7,7 @@ from typing import Protocol
 
 from app.config import ChannelProfile
 
-PROMPT_VERSION = "v2"
+PROMPT_VERSION = "v3"
 MAX_QUOTE_WORDS = 15
 ELLIPSIS = "…"
 RESPONSE_KEYS = ("relevant", "score", "title", "summary", "hashtags", "category")
@@ -38,6 +38,12 @@ def truncate_words(text: str, max_chars: int) -> str:
     return cut.rstrip() + ELLIPSIS
 
 
+def _hashtags_rule(profile: ChannelProfile) -> str:
+    if profile.hashtags_max == 0:
+        return '- "hashtags": пустой список, хэштеги в канале не используются;\n'
+    return f'- "hashtags": список не больше чем из {profile.hashtags_max} хэштегов;\n'
+
+
 def _system_message(profile: ChannelProfile) -> str:
     return (
         f"Ты — редактор Telegram-канала. Тематика канала: {profile.topic}. "
@@ -55,8 +61,8 @@ def _system_message(profile: ChannelProfile) -> str:
         '- "score": число от 0 до 1 — насколько новость важна и интересна читателям канала;\n'
         f'- "title": заголовок не длиннее {profile.max_title_chars} символов;\n'
         f'- "summary": пересказ не длиннее {profile.max_summary_chars} символов;\n'
-        f'- "hashtags": список не больше чем из {profile.hashtags_max} хэштегов;\n'
-        '- "category": одно слово — рубрика новости.'
+        + _hashtags_rule(profile)
+        + '- "category": одно слово — рубрика новости.'
     )
 
 

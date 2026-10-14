@@ -22,7 +22,7 @@ from app.pipeline.ai.prompts import PROMPT_VERSION
 from tests.config_helpers import base_section
 
 CFG = AiConfig(**{**base_section("ai"), "min_score": 0.5})
-PROFILE = ChannelProfile(**base_section("channel"))
+PROFILE = ChannelProfile(**{**base_section("channel"), "hashtags_max": 2})
 SOURCE_TEXT = (
     "Компания Nvidia представила новый процессор. По данным компании, он на 30% быстрее "
     "предыдущей модели и поступит в продажу в 2027 году."

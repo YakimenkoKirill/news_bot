@@ -158,7 +158,7 @@ async def test_send_preview_falls_back_to_text() -> None:
     [(kind, kwargs)] = bot.calls
     assert kind == "message"
     assert kwargs["text"] == preview.fitted.html
-    assert kwargs["link_preview_options"].url == "https://src.example/a"
+    assert "link_preview_options" not in kwargs
     assert kwargs["reply_markup"] is KEYBOARD
 
 

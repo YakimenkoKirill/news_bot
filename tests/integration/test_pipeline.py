@@ -208,7 +208,7 @@ async def test_rss_news_reaches_published(
     [sent] = pipe.telegram.sent
     assert sent["chat_id"] == CHANNEL
     assert "Пересказ главной новости" in sent["text"]
-    assert 'href="https://news.example/1"' in sent["text"]
+    assert "news.example" not in sent["text"]
 
 
 async def test_same_news_from_second_source_is_duplicate(

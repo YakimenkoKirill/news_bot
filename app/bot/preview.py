@@ -11,7 +11,7 @@ from typing import Any, Protocol
 import structlog
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import InlineKeyboardMarkup, LinkPreviewOptions
+from aiogram.types import InlineKeyboardMarkup
 
 from app.config import PublisherConfig
 from app.db.models import ProcessedPost
@@ -47,7 +47,7 @@ class PostPreview:
     Attributes:
         fitted: Пост, подогнанный под лимиты, как при публикации.
         image_url: Картинка новости.
-        link: Ссылка на источник (для предпросмотра ссылки в текстовом сообщении).
+        link: Ссылка на источник; в текст поста не выводится.
     """
 
     fitted: FittedPost
@@ -113,7 +113,6 @@ async def send_preview(
         chat_id=chat_id,
         text=preview.fitted.html,
         parse_mode=ParseMode.HTML,
-        link_preview_options=LinkPreviewOptions(url=preview.link, prefer_large_media=True),
         reply_markup=keyboard,
     )
 

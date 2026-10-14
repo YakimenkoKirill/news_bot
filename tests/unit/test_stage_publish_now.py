@@ -231,7 +231,7 @@ async def test_publishes_approved_immediately() -> None:
     [pub] = env.db.publications
     assert (pub.status, pub.message_id, pub.published_at) == (PublicationStatus.SENT, 9001, NOON)
     fitted, _, link = env.sender.calls[0]
-    assert link == "https://src.example/a"
+    assert link is None
     assert "<b>Заголовок</b>" in fitted.html
 
 

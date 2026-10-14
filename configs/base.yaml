@@ -48,7 +48,7 @@ pipeline:
   batch_size: 20
 
 ai:
-  model: "deepseek-v4-flash"
+  model: "deepseek-flash"
   temperature: 0.3
   timeout_s: 60
   max_concurrency: 3
@@ -64,7 +64,7 @@ channel:
   tone: "нейтральный, деловой, без кликбейта"      # тон пересказа
   max_title_chars: 90                              # длина заголовка поста
   max_summary_chars: 700                           # длина пересказа
-  hashtags_max: 3                                  # сколько хэштегов максимум
+  hashtags_max: 0                                  # сколько хэштегов максимум (0 — без хэштегов)
 
 publisher:
   # лимиты Bot API: подпись к медиа 1024, текст сообщения 4096 символов

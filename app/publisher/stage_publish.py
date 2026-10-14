@@ -230,7 +230,7 @@ async def publish_item(
     fitted = fit_post(build_post(post, item, source), has_photo=image.ok, cfg=deps.cfg)
     publications = deps.publication_repo(session)
     try:
-        message_id = await deps.publisher.send(fitted, item.image_url, item.url)
+        message_id = await deps.publisher.send(fitted, item.image_url)
     except PublishError as exc:
         await publications.add(
             Publication(

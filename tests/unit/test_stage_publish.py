@@ -210,9 +210,9 @@ async def test_successful_publication_one_per_call() -> None:
     assert pub.status is PublicationStatus.SENT
     assert (pub.message_id, pub.published_at, pub.processed_post_id) == (9001, NOON, 20)
     fitted, image_url, link = env.sender.calls[0]
+    assert link is None
     assert fitted.use_photo is True
     assert image_url == "https://cdn.example/a.jpg"
-    assert link == "https://src.example/a"
     assert "<b>Заголовок</b>" in fitted.html
 
 
