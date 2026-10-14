@@ -45,10 +45,11 @@ dedup:
   simhash_max_distance: 3
 
 pipeline:
-  batch_size: 20
+   batch_size: 20
 
 ai:
   model: "deepseek-flash"
+  model: "deepseek-v4-flash-free"
   temperature: 0.3
   timeout_s: 60
   max_concurrency: 3
@@ -56,31 +57,22 @@ ai:
   max_input_chars: 6000
   price_input_per_1m: 0.256    # $ за 1 млн входных токенов
   price_output_per_1m: 1.02    # $ за 1 млн выходных токенов
+  price_input_per_1m: 0.0004    # $ за 1 млн входных токенов
+  price_output_per_1m: 0.0013    # $ за 1 млн выходных токенов
   daily_budget: 0.5            # $ в сутки, при достижении обработка останавливается
   min_score: 0.5     # порог интереса новости, от 0 до 1
+  min_score: 0.6     # порог интереса новости, от 0 до 1
 channel:
   topic: "технологии и искусственный интеллект"   # тематика канала
+  topic: "экономика и финансы"   # тематика канала
   language: "ru"                                   # язык постов
   tone: "нейтральный, деловой, без кликбейта"      # тон пересказа
   max_title_chars: 90                              # длина заголовка поста
-  max_summary_chars: 700                           # длина пересказа
-  hashtags_max: 0                                  # сколько хэштегов максимум (0 — без хэштегов)
-
-publisher:
-  # лимиты Bot API: подпись к медиа 1024, текст сообщения 4096 символов
-  caption_limit: 1024
-  text_limit: 4096
-  min_summary_chars: 200
-  image_types: ["image/jpeg", "image/png", "image/webp"]
-  # фото по URL в Bot API: не больше 5 МБ
   image_max_bytes: 5242880
   min_interval_min: 10
   max_retries: 3
   quiet_hours: ["23:00", "07:00"]
-  # подпись в конце поста: знак, затем название канала ссылкой; пустой url — без подписи
-  footer_mark: "🔵"
-  footer_title: "try_1"
-  footer_url: "https://t.me/news_try"
+  quiet_hours: ["00:00", "07:00"]
   # насколько снижается приоритет поста в очереди за час возраста (0 — только по оценке):
   # при 0.02 новость 12-часовой давности теряет 0.24, свежая 0.6 выйдет раньше вчерашней 0.8
   score_decay_per_h: 0.02
