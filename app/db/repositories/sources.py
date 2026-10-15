@@ -28,6 +28,18 @@ class SourceRepository:
         await self._session.flush()
         return source
 
+    async def lock(self, source_id: int) -> bool:
+        """Блокирует строку источника до конца транзакции.
+
+        Нужен, чтобы две новости одного источника не прошли проверку лимита
+        очереди одновременно: вторая подождёт коммита первой.
+
+        Returns:
+            False, если источника нет.
+        """
+        stmt = select(Source.id).where(Source.id == source_id).with_for_update()
+        return (await self._session.scalars(stmt)).one_or_none() is not None
+
     async def get(self, source_id: int) -> Source | None:
         """Возвращает источник по id или None."""
         return await self._session.get(Source, source_id)

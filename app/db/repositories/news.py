@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
@@ -120,6 +121,21 @@ def _prepared_query(
         .where(NewsItem.status.in_(statuses))
         .order_by(_priority(decay_per_h).desc(), NewsItem.id)
     )
+
+
+@dataclass(frozen=True)
+class QueuedRef:
+    """Пост очереди для проверки лимита источника.
+
+    Attributes:
+        news_id: Новость.
+        status: Текущий статус (approved или scheduled).
+        priority: Приоритет публикации; меньше — слабее.
+    """
+
+    news_id: int
+    status: NewsStatus
+    priority: float
 
 
 class NewsRepository:
@@ -415,6 +431,60 @@ class NewsRepository:
             select(func.count()).select_from(NewsItem).where(NewsItem.status == NewsStatus.FAILED)
         )
         return int(await self._session.scalar(stmt) or 0)
+
+    async def queued_by_source(
+        self, source_id: int, statuses: Sequence[NewsStatus], decay_per_h: float
+    ) -> list[QueuedRef]:
+        """Посты источника в очереди, от самого слабого к самому сильному.
+
+        Порядок обратен list_prepared: первым идёт тот, кого вытеснять.
+
+        Raises:
+            ValueError: Пустой список статусов или decay_per_h < 0.
+        """
+        checked = _check_statuses(statuses)
+        _check_decay(decay_per_h)
+        priority = _priority(decay_per_h)
+        stmt = (
+            select(NewsItem.id, NewsItem.status, priority)
+            .join(ProcessedPost, ProcessedPost.news_item_id == NewsItem.id)
+            .where(NewsItem.source_id == source_id, NewsItem.status.in_(checked))
+            .order_by(priority, NewsItem.id.desc())
+        )
+        rows = (await self._session.execute(stmt)).all()
+        return [
+            QueuedRef(news_id=row[0], status=NewsStatus(row[1]), priority=row[2]) for row in rows
+        ]
+
+    async def priority_of(self, news_id: int, decay_per_h: float) -> float | None:
+        """Приоритет новости или None, если новости нет или у неё нет пересказа.
+
+        Raises:
+            ValueError: decay_per_h < 0.
+        """
+        _check_decay(decay_per_h)
+        stmt = (
+            select(_priority(decay_per_h))
+            .select_from(NewsItem)
+            .join(ProcessedPost, ProcessedPost.news_item_id == NewsItem.id)
+            .where(NewsItem.id == news_id)
+        )
+        return (await self._session.scalars(stmt)).one_or_none()
+
+    async def queue_counts_by_source(self, statuses: Sequence[NewsStatus]) -> dict[int, int]:
+        """Сколько постов в очереди у каждого источника (только с пересказом).
+
+        Raises:
+            ValueError: Пустой список статусов.
+        """
+        checked = _check_statuses(statuses)
+        stmt = (
+            select(NewsItem.source_id, func.count())
+            .join(ProcessedPost, ProcessedPost.news_item_id == NewsItem.id)
+            .where(NewsItem.status.in_(checked))
+            .group_by(NewsItem.source_id)
+        )
+        return dict((await self._session.execute(stmt)).all())
 
     async def count_by_status(self) -> dict[NewsStatus, int]:
         """Возвращает число новостей в каждом статусе, включая нулевые."""

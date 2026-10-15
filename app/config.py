@@ -178,6 +178,7 @@ class PublisherConfig(BaseModel):
     image_types: list[str] = Field(min_length=1)
     image_max_bytes: int = Field(ge=1)
     min_interval_min: float = Field(ge=0)
+    max_queued_per_source: int = Field(ge=0)
     quiet_hours: list[str]
     max_retries: int = Field(ge=0)
     score_decay_per_h: float = Field(ge=0)

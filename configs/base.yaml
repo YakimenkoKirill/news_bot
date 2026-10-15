@@ -76,6 +76,7 @@ publisher:
   # фото по URL в Bot API: не больше 5 МБ
   image_max_bytes: 5242880
   min_interval_min: 22
+  max_queued_per_source: 4   # постов одного источника в очереди (0 — без лимита)
   max_retries: 3
   quiet_hours: ["00:00", "07:00"]
   # подпись в конце поста: знак, затем название канала ссылкой; пустой url — без подписи

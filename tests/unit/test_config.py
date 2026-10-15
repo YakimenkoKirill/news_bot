@@ -224,3 +224,22 @@ def test_ui_unknown_key_rejected(configs_dir: Path) -> None:
     (configs_dir / "prod.yaml").write_text("ui:\n  surprise: 1\n", encoding="utf-8")
     with pytest.raises(ValidationError, match="surprise"):
         load_settings(configs_dir, "prod")
+
+
+def test_max_queued_per_source(configs_dir: Path) -> None:
+    assert load_settings(configs_dir).publisher.max_queued_per_source == 4
+
+
+def test_zero_queue_limit_allowed(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text(
+        "publisher:\n  max_queued_per_source: 0\n", encoding="utf-8"
+    )
+    assert load_settings(configs_dir, "prod").publisher.max_queued_per_source == 0
+
+
+def test_negative_queue_limit_rejected(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text(
+        "publisher:\n  max_queued_per_source: -1\n", encoding="utf-8"
+    )
+    with pytest.raises(ValidationError, match="max_queued_per_source"):
+        load_settings(configs_dir, "prod")
