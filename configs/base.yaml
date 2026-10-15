@@ -48,14 +48,14 @@ pipeline:
   batch_size: 20
 
 ai:
-  model: "deepseek-flash-free"
+  model: "deepseek-flash"
   temperature: 0.3
   timeout_s: 60
   max_concurrency: 3
   max_retries: 3
   max_input_chars: 6000
-  price_input_per_1m: 0.0004   # $ за 1 млн входных токенов
-  price_output_per_1m: 0.0013  # $ за 1 млн выходных токенов
+  price_input_per_1m: 0.13   # $ за 1 млн входных токенов
+  price_output_per_1m: 0.52  # $ за 1 млн выходных токенов
   daily_budget: 0.5            # $ в сутки, при достижении обработка останавливается
   min_score: 0.6     # порог интереса новости, от 0 до 1
 
