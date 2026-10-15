@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Incident, NewsItem, ProcessedPost, Publication, Source
 from app.domain.enums import NewsStatus, PublicationStatus
 from app.pipeline.ai.processor import REASON_NOT_RELEVANT
+from app.pipeline.queue_limit import REASON_QUEUE_LIMIT
 from app.reports.metrics import DUPLICATE_PREFIX, Period, RunReport, collect_report
 
 CHANNEL_PREFIX = "-100"
@@ -84,6 +85,7 @@ class SourceStats:
     not_relevant: int = 0
     rejected: int = 0
     ai_failed: int = 0
+    queue_limited: int = 0
     avg_score: float | None = None
     cost: Decimal = Decimal(0)
 
@@ -104,6 +106,7 @@ class Funnel:
     processed: int = 0
     not_relevant: int = 0
     ai_failed: int = 0
+    queue_limited: int = 0
     pending_review: int = 0
     rejected: int = 0
     in_queue: int = 0
@@ -288,10 +291,14 @@ async def _sources(session: AsyncSession, period: Period) -> tuple[SourceStats, 
                 func.count(),
                 func.count().filter(NewsItem.status == NewsStatus.DUPLICATE),
                 func.count().filter(
-                    NewsItem.status == NewsStatus.FILTERED, reason != REASON_NOT_RELEVANT
+                    NewsItem.status == NewsStatus.FILTERED,
+                    reason.notin_((REASON_NOT_RELEVANT, REASON_QUEUE_LIMIT)),
                 ),
                 func.count().filter(
                     NewsItem.status == NewsStatus.FILTERED, reason == REASON_NOT_RELEVANT
+                ),
+                func.count().filter(
+                    NewsItem.status == NewsStatus.FILTERED, reason == REASON_QUEUE_LIMIT
                 ),
                 func.count().filter(NewsItem.status == NewsStatus.REJECTED),
                 func.count().filter(NewsItem.status == NewsStatus.FAILED, reason == REASON_BAD_AI),
@@ -351,8 +358,9 @@ async def _sources(session: AsyncSession, period: Period) -> tuple[SourceStats, 
                 duplicates=row[2] if row else 0,
                 filtered=row[3] if row else 0,
                 not_relevant=row[4] if row else 0,
-                rejected=row[5] if row else 0,
-                ai_failed=row[6] if row else 0,
+                queue_limited=row[5] if row else 0,
+                rejected=row[6] if row else 0,
+                ai_failed=row[7] if row else 0,
                 avg_score=float(score) if score is not None else None,
                 cost=Decimal(cost),
             )
@@ -383,6 +391,7 @@ async def _funnel(session: AsyncSession, period: Period) -> Funnel:
     duplicates_by_level: dict[str, int] = {}
     filtered_by_reason: dict[str, int] = {}
     not_relevant = 0
+    queue_limited = 0
     for status, reason, count in reason_rows:
         text = reason or ""
         if status is NewsStatus.DUPLICATE:
@@ -392,6 +401,9 @@ async def _funnel(session: AsyncSession, period: Period) -> Funnel:
         key = text.split(":")[0] if text else "unknown"
         if key == REASON_NOT_RELEVANT:
             not_relevant += count
+            continue
+        if key == REASON_QUEUE_LIMIT:
+            queue_limited += count
             continue
         filtered_by_reason[key] = filtered_by_reason.get(key, 0) + count
 
@@ -424,6 +436,7 @@ async def _funnel(session: AsyncSession, period: Period) -> Funnel:
         processed=processed,
         not_relevant=not_relevant,
         ai_failed=ai_failed,
+        queue_limited=queue_limited,
         pending_review=counts.get(NewsStatus.PENDING_REVIEW, 0),
         rejected=counts.get(NewsStatus.REJECTED, 0),
         in_queue=in_queue,

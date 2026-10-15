@@ -234,6 +234,24 @@ class Incident(Base):
     resolved_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
+class BotScreen(Base):
+    """Текущий экран чата с ботом: сообщения, которые висят у администратора.
+
+    Экран — группа сообщений, отправленных в ответ на одно событие. Новый экран
+    приходит на смену прошлому, поэтому список хранится в БД: после перезапуска
+    приложения бот всё равно знает, что удалять.
+    """
+
+    __tablename__ = "bot_screens"
+
+    chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    screen_token: Mapped[str] = mapped_column(String(64))
+    message_ids: Mapped[list[int]] = mapped_column(
+        ARRAY(BigInteger), default=list, server_default=text("'{}'::bigint[]")
+    )
+    updated_at: Mapped[datetime] = mapped_column(_tz(), server_default=func.now())
+
+
 class Setting(Base):
     """Изменяемая во время работы настройка (например, пауза публикаций)."""
 

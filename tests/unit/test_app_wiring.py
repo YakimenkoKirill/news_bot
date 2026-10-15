@@ -1,5 +1,7 @@
 import asyncio
 import shutil
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,7 @@ from app.scheduler import JobRunner
 EXPECTED_ORDER = [
     "database",
     "start_marker",
+    "queue_trim",
     "http_client",
     "ai_client",
     "bot",
@@ -56,13 +59,13 @@ async def test_build_components_order_and_wiring(settings: Settings) -> None:
     try:
         assert [c.name for c in components] == EXPECTED_ORDER
         assert isinstance(components[0], DatabaseComponent)
-        assert isinstance(components[3], ClosingComponent)
-        assert isinstance(components[4], BotPollingComponent)
-        assert isinstance(components[6], SchedulerComponent)
+        assert isinstance(components[4], ClosingComponent)
+        assert isinstance(components[5], BotPollingComponent)
+        assert isinstance(components[7], SchedulerComponent)
     finally:
+        await components[6].stop()
         await components[5].stop()
         await components[4].stop()
-        await components[3].stop()
         await components[0].stop()
 
 
@@ -105,19 +108,9 @@ async def test_telethon_auth_error_rolls_back() -> None:
     ]
     with pytest.raises(TelegramAuthRequired):
         await Application(components).start()
-    assert rec.calls == [
-        "start:database",
-        "start:start_marker",
-        "start:http_client",
-        "start:ai_client",
-        "start:bot",
-        "start:telegram_collector",
-        "stop:bot",
-        "stop:ai_client",
-        "stop:http_client",
-        "stop:start_marker",
-        "stop:database",
-    ]
+    started = EXPECTED_ORDER[: EXPECTED_ORDER.index("telegram_collector") + 1]
+    stopped = [name for name in reversed(started[:-1])]
+    assert rec.calls == [f"start:{name}" for name in started] + [f"stop:{name}" for name in stopped]
 
 
 def test_main_prints_clear_message_on_auth_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -253,3 +246,36 @@ async def test_closing_component() -> None:
     await component.start()
     await component.stop()
     assert closed == ["x"]
+
+
+async def test_queue_trim_component_trims_on_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[int, float]] = []
+
+    async def fake_trim(repos: object, max_per_source: int, decay_per_h: float) -> int:
+        calls.append((max_per_source, decay_per_h))
+        return 2
+
+    monkeypatch.setattr(main_module, "trim_queue", fake_trim)
+
+    @asynccontextmanager
+    async def scope() -> AsyncIterator[Any]:
+        yield object()
+
+    component = main_module.QueueTrimComponent(scope, 4, 0.02)
+    await component.start()
+    await component.stop()
+    assert calls == [(4, 0.02)]
+
+
+async def test_queue_trim_failure_is_raised(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def failing(repos: object, max_per_source: int, decay_per_h: float) -> int:
+        raise RuntimeError("БД недоступна")
+
+    monkeypatch.setattr(main_module, "trim_queue", failing)
+
+    @asynccontextmanager
+    async def scope() -> AsyncIterator[Any]:
+        yield object()
+
+    with pytest.raises(RuntimeError):
+        await main_module.QueueTrimComponent(scope, 4, 0.02).start()

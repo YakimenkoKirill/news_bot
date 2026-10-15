@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
@@ -16,6 +17,7 @@ from app.pipeline.ai.client import AiRawResponse, AiResponseError, Message
 from app.pipeline.ai.factcheck import unsupported_facts
 from app.pipeline.ai.prompts import PROMPT_VERSION, build_messages
 from app.pipeline.ai.schema import AiResult, parse_ai_response
+from app.pipeline.queue_limit import AdmitOutcome, AdmitResult
 
 log = structlog.get_logger(__name__)
 
@@ -35,6 +37,7 @@ class ProcessableNews(Protocol):
     """Поля новости для обработки (NewsItem подходит структурно)."""
 
     id: int
+    source_id: int
     title: str
     url: str
     clean_text: str | None
@@ -72,10 +75,17 @@ class PostRepo(Protocol):
 
 @dataclass(frozen=True)
 class AiRepos:
-    """Репозитории одной сессии БД."""
+    """Репозитории одной сессии БД.
+
+    Attributes:
+        news, posts: Репозитории.
+        admit: Постановка в очередь с учётом лимита источника (news_id, source_id).
+            None — прежний прямой переход в approved.
+    """
 
     news: StatusRepo
     posts: PostRepo
+    admit: Callable[[int, int], Awaitable[AdmitResult]] | None = None
 
 
 class AiProcessor:
@@ -150,11 +160,12 @@ class AiProcessor:
                 review_note=review_note,
             )
         )
-        return await self._finish(news.id, result, review_note, source)
+        return await self._finish(news.id, news.source_id, result, review_note, source)
 
     async def _finish(
         self,
         news_id: int,
+        source_id: int,
         result: AiResult,
         review_note: str | None,
         source: ModeratedSource,
@@ -172,5 +183,11 @@ class AiProcessor:
             await news_repo.set_status(news_id, NewsStatus.PROCESSED, NewsStatus.PENDING_REVIEW)
             log.info("ai.pending_review", review_note=review_note)
             return NewsStatus.PENDING_REVIEW
-        await news_repo.set_status(news_id, NewsStatus.PROCESSED, NewsStatus.APPROVED)
+        if self._repos.admit is None:
+            await news_repo.set_status(news_id, NewsStatus.PROCESSED, NewsStatus.APPROVED)
+            return NewsStatus.APPROVED
+        admitted = await self._repos.admit(news_id, source_id)
+        if admitted.outcome is AdmitOutcome.REJECTED:
+            log.info("ai.queue_limit", score=result.score)
+            return NewsStatus.FILTERED
         return NewsStatus.APPROVED

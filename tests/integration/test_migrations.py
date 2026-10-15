@@ -65,7 +65,7 @@ def test_repeated_upgrade_is_noop(clean_db: Config, test_database_url: str) -> N
     head = ScriptDirectory.from_config(clean_db).get_current_head()
     command.upgrade(clean_db, "head")
     command.upgrade(clean_db, "head")
-    assert _current_revision(test_database_url) == head == "0003"
+    assert _current_revision(test_database_url) == head == "0004"
 
 
 def test_news_items_indexes(clean_db: Config, test_database_url: str) -> None:
@@ -116,6 +116,22 @@ def test_publication_initiator_added_in_0003(clean_db: Config, test_database_url
     assert "initiated_by" not in after
     assert after == before_downgrade - {"initiated_by"}
     assert _current_revision(test_database_url) == "0002"
+
+
+def test_bot_screens_added_in_0004(clean_db: Config, test_database_url: str) -> None:
+    command.upgrade(clean_db, "head")
+    assert "bot_screens" in _table_names(test_database_url)
+    columns = {
+        str(column["name"])
+        for column in _with_connection(
+            test_database_url, lambda conn: inspect(conn).get_columns("bot_screens")
+        )
+    }
+    assert columns == {"chat_id", "screen_token", "message_ids", "updated_at"}
+
+    command.downgrade(clean_db, "0003")
+    assert "bot_screens" not in _table_names(test_database_url)
+    assert _current_revision(test_database_url) == "0003"
 
 
 def test_autogenerate_finds_no_differences(clean_db: Config, test_database_url: str) -> None:

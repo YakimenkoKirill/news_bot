@@ -8,6 +8,7 @@ from collections.abc import Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import partial
 from typing import Any, Protocol
 
 import structlog
@@ -26,6 +27,7 @@ from app.pipeline.ai.processor import (
     ProcessableNews,
     StatusRepo,
 )
+from app.pipeline.queue_limit import QueueAdmission
 
 log = structlog.get_logger(__name__)
 
@@ -110,6 +112,7 @@ class AiStageDeps:
         sink: Получатель алертов.
         batch_size: Размер пачки (pipeline.batch_size).
         max_concurrency: Сколько новостей обрабатывать одновременно (ai.max_concurrency).
+        admission: Лимит источника при постановке в очередь; None — без лимита.
     """
 
     session_scope: Callable[[], AbstractAsyncContextManager[Any]]
@@ -123,6 +126,7 @@ class AiStageDeps:
     sink: AlertSink
     batch_size: int
     max_concurrency: int
+    admission: QueueAdmission | None = None
 
 
 @dataclass(frozen=True)
@@ -244,7 +248,14 @@ async def _process_one(item: ClaimableNews, now: datetime, deps: AiStageDeps) ->
                 log.warning("ai_stage.source_missing", source_id=item.source_id)
                 return None
             posts = deps.post_repo(session)
-            processor = deps.processor(AiRepos(news=deps.news_repo(session), posts=posts))
+            admit = (
+                partial(deps.admission.admit, session, expected=NewsStatus.PROCESSED)
+                if deps.admission is not None
+                else None
+            )
+            processor = deps.processor(
+                AiRepos(news=deps.news_repo(session), posts=posts, admit=admit)
+            )
             status = await processor.process(item, source)
             if status is NewsStatus.PENDING_REVIEW:
                 post = await posts.get_by_news(item.id)

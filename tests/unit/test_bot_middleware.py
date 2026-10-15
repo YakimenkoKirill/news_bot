@@ -3,7 +3,7 @@ from typing import Any
 
 import pytest
 import structlog
-from aiogram.methods import AnswerCallbackQuery
+from aiogram.methods import AnswerCallbackQuery, DeleteMessage
 from aiogram.types import Update
 
 from app.bot import BotDeps, create_dispatcher, texts
@@ -20,10 +20,11 @@ from app.bot.keyboards import (
     ReportAction,
 )
 from app.bot.middlewares import AdminOnlyMiddleware
-from app.config import Settings
+from app.bot.screen import ScreenUpdateMiddleware
+from app.config import Settings, UiConfig
 from app.logging import setup_logging
 from tests.bot_helpers import FakeSession, callback_update, make_bot, message_update
-from tests.config_helpers import bot_config
+from tests.config_helpers import base_section, bot_config
 from tests.unit.test_bot_queue import Db, _deps
 from tests.unit.test_bot_report import Builder
 from tests.unit.test_bot_report import _deps as report_deps
@@ -262,3 +263,43 @@ async def test_stranger_refused_on_report_callback(monkeypatch: pytest.MonkeyPat
     answers = [r for r in session.requests if isinstance(r, AnswerCallbackQuery)]
     assert [(a.text, a.show_alert) for a in answers] == [(texts.ACCESS_DENIED, True)]
     assert not [r for r in session.requests if not isinstance(r, AnswerCallbackQuery)]
+
+
+def _dispatcher_with_screens() -> Any:
+    return create_dispatcher(
+        BotDeps(
+            settings=Settings.model_construct(
+                telegram_admin_ids=[SETTINGS_ADMIN], bot=bot_config(refusal_cooldown_s=COOLDOWN)
+            ),
+            admin_repo=AdminRepo(),
+            screen_middleware=ScreenUpdateMiddleware(UiConfig(**base_section("ui"))),
+        )
+    )
+
+
+def test_access_check_runs_before_screens() -> None:
+    """Постороннему экран не создаётся и его сообщение не удаляется."""
+    dispatcher = _dispatcher_with_screens()
+    for observer in (dispatcher.message, dispatcher.callback_query):
+        kinds = [type(m) for m in observer.outer_middleware]
+        assert kinds.index(AdminOnlyMiddleware) < kinds.index(ScreenUpdateMiddleware)
+
+
+def test_screens_not_added_without_middleware() -> None:
+    dispatcher = create_dispatcher(
+        BotDeps(
+            settings=Settings.model_construct(
+                telegram_admin_ids=[SETTINGS_ADMIN], bot=bot_config()
+            ),
+            admin_repo=AdminRepo(),
+        )
+    )
+    for observer in (dispatcher.message, dispatcher.callback_query):
+        assert not any(isinstance(m, ScreenUpdateMiddleware) for m in observer.outer_middleware)
+
+
+async def test_stranger_message_not_deleted(monkeypatch: pytest.MonkeyPatch) -> None:
+    bot, session = make_bot()
+    await _dispatcher_with_screens().feed_update(bot, message_update(STRANGER, "/status"))
+    assert session.sent_texts() == [texts.ACCESS_DENIED]
+    assert not [r for r in session.requests if isinstance(r, DeleteMessage)]

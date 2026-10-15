@@ -10,6 +10,7 @@ from aiogram.methods import SendMessage
 
 from app.bot.keyboards import ReviewAction, ReviewActionType
 from app.bot.moderation import REVIEW_NOTE_PREFIX, BotReviewNotifier, ReviewNotifierDeps
+from app.bot.screen import current_screen
 from app.config import PublisherConfig
 from app.db.models import ProcessedPost
 from app.publisher.formatter import build_post
@@ -232,3 +233,27 @@ def test_real_components_fit_protocols() -> None:
     )
     notifier: ReviewNotifier = BotReviewNotifier(MagicMock(), deps)
     assert notifier is not None
+
+
+async def test_note_and_preview_share_one_screen() -> None:
+    """Заметка и черновик одного админа — один экран; у разных админов экраны разные."""
+    screens: list[tuple[int, str]] = []
+
+    class ScreenBot(FakeBot):
+        async def send_message(self, **kwargs: Any) -> None:
+            screens.append((kwargs["chat_id"], current_screen()))
+            await super().send_message(**kwargs)
+
+        async def send_photo(self, **kwargs: Any) -> None:
+            screens.append((kwargs["chat_id"], current_screen()))
+            await super().send_photo(**kwargs)
+
+    db = Db(news={1: News(1)})
+    await _notifier(db, ScreenBot()).notify(_post(1, review_note="Проверьте 45%"))
+
+    by_admin: dict[int, set[str]] = {}
+    for chat_id, token in screens:
+        by_admin.setdefault(chat_id, set()).add(token)
+    assert set(by_admin) == set(ADMINS)
+    assert all(len(tokens) == 1 for tokens in by_admin.values()), "заметка и черновик вместе"
+    assert len({next(iter(t)) for t in by_admin.values()}) == len(ADMINS)

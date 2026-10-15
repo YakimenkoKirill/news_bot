@@ -35,6 +35,7 @@ from app.bot.handlers.sources import SourcesDeps
 from app.bot.handlers.status import StatusDeps
 from app.bot.moderation import BotReviewNotifier, ReviewNotifierDeps
 from app.bot.preview import PreviewDeps
+from app.bot.screen import ScreenRequestMiddleware, ScreenTracker, ScreenUpdateMiddleware
 from app.collectors.base import BaseCollector
 from app.collectors.health import SourceHealthTracker
 from app.collectors.http import HttpClient
@@ -57,6 +58,7 @@ from app.db.repositories.incidents import IncidentRepository
 from app.db.repositories.misc import AdminRepository, KeywordRepository, SettingsRepository
 from app.db.repositories.news import NewsRepository
 from app.db.repositories.posts import ProcessedPostRepository, PublicationRepository
+from app.db.repositories.screens import ScreenRepository
 from app.db.repositories.sources import SourceRepository
 from app.domain.alerts import AlertEvent, AlertKind
 from app.domain.enums import SourceType
@@ -65,6 +67,7 @@ from app.logging import setup_logging
 from app.pipeline.ai.budget import BudgetGuard
 from app.pipeline.ai.client import DeepSeekClient
 from app.pipeline.ai.processor import AiProcessor, AiRepos
+from app.pipeline.queue_limit import QueueAdmission, QueueLimitRepos, trim_queue
 from app.pipeline.retry import RetryDeps
 from app.pipeline.stage_ai import AiStageDeps, process_normalized_batch
 from app.pipeline.stage_normalize import NormalizeDeps, process_new_batch
@@ -183,6 +186,14 @@ def build_components(settings: Settings) -> list[Component]:
         http, settings.collectors.user_agent, timedelta(hours=settings.collectors.robots_ttl_h)
     )
     bot = create_bot(settings)
+    # Этот же бот публикует в канал, поэтому middleware исключает канал из экранов.
+    bot.session.middleware(
+        ScreenRequestMiddleware(
+            ScreenTracker(scope, ScreenRepository, bot, settings.ui, lambda: datetime.now(UTC)),
+            settings.telegram_channel_id,
+            settings.ui,
+        )
+    )
     admins = _Admins(settings, scope)
     silent_kinds = frozenset(settings.alerts.silent_kinds)
 
@@ -269,6 +280,12 @@ def build_components(settings: Settings) -> list[Component]:
         dedup=settings.dedup,
         batch_size=settings.pipeline.batch_size,
     )
+    admission = QueueAdmission(
+        news_repo=NewsRepository,
+        source_repo=SourceRepository,
+        max_per_source=settings.publisher.max_queued_per_source,
+        decay_per_h=settings.publisher.score_decay_per_h,
+    )
     ai_deps = AiStageDeps(
         session_scope=scope,
         news_repo=NewsRepository,
@@ -281,6 +298,7 @@ def build_components(settings: Settings) -> list[Component]:
         sink=alerts,
         batch_size=settings.pipeline.batch_size,
         max_concurrency=settings.ai.max_concurrency,
+        admission=admission,
     )
     publish_deps = PublishDeps(
         session_scope=scope,
@@ -367,6 +385,7 @@ def build_components(settings: Settings) -> list[Component]:
         BotDeps(
             settings=settings,
             admin_repo=admins,
+            screen_middleware=ScreenUpdateMiddleware(settings.ui),
             routers=[
                 status_handlers.create_router(),
                 sources_handlers.create_router(),
@@ -386,6 +405,7 @@ def build_components(settings: Settings) -> list[Component]:
                     publication_repo=PublicationRepository,
                     settings_repo=SettingsRepository,
                     incident_repo=IncidentRepository,
+                    max_queued_per_source=settings.publisher.max_queued_per_source,
                     daily_budget=settings.ai.daily_budget,
                     channel_id=settings.telegram_channel_id,
                     tz=tz,
@@ -416,6 +436,7 @@ def build_components(settings: Settings) -> list[Component]:
                     source_repo=SourceRepository,
                     cfg=settings.publisher,
                     snooze_min=settings.moderation.snooze_min,
+                    admission=admission,
                 ),
                 "queue_deps": QueueDeps(
                     session_scope=scope,
@@ -430,6 +451,7 @@ def build_components(settings: Settings) -> list[Component]:
                     tz=tz,
                     page_size=settings.bot.page_size,
                     title_chars=settings.bot.queue_title_chars,
+                    max_per_source=settings.publisher.max_queued_per_source,
                     clock=lambda: datetime.now(UTC),
                     manual=manual_deps,
                 ),
@@ -443,6 +465,7 @@ def build_components(settings: Settings) -> list[Component]:
                         session_scope=scope,
                         news_repo=NewsRepository,
                         post_repo=ProcessedPostRepository,
+                        admission=admission,
                     ),
                     silent_kinds=silent_kinds,
                     page_size=settings.bot.page_size,
@@ -458,12 +481,52 @@ def build_components(settings: Settings) -> list[Component]:
     return [
         DatabaseComponent(engine),
         StartMarkerComponent(scope, started_at),
+        QueueTrimComponent(
+            scope,
+            settings.publisher.max_queued_per_source,
+            settings.publisher.score_decay_per_h,
+        ),
         http,
         ClosingComponent("ai_client", deepseek.close),
         BotPollingComponent(bot, dispatcher, setup_bot_commands),
         telegram,
         SchedulerComponent(scheduler, runner),
     ]
+
+
+class QueueTrimComponent:
+    """Приводит очередь к лимиту источника при старте.
+
+    Нужен, когда лимит включили или уменьшили, пока приложение не работало.
+    Ошибка пробрасывается: стартовать с неизвестным состоянием очереди нельзя.
+    """
+
+    name = "queue_trim"
+
+    def __init__(
+        self,
+        scope: Callable[[], AbstractAsyncContextManager[AsyncSession]],
+        max_per_source: int,
+        decay_per_h: float,
+    ) -> None:
+        self._scope = scope
+        self._max_per_source = max_per_source
+        self._decay_per_h = decay_per_h
+
+    async def start(self) -> None:
+        """Вытесняет лишние посты каждого источника одной транзакцией."""
+        try:
+            async with self._scope() as session:
+                repos = QueueLimitRepos(
+                    news=NewsRepository(session), sources=SourceRepository(session)
+                )
+                await trim_queue(repos, self._max_per_source, self._decay_per_h)
+        except Exception:
+            log.exception("queue_limit.trim_failed")
+            raise
+
+    async def stop(self) -> None:
+        """Ничего не делает."""
 
 
 class StartMarkerComponent:

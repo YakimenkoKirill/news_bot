@@ -54,12 +54,13 @@ ai:
   max_concurrency: 3
   max_retries: 3
   max_input_chars: 6000
-  price_input_per_1m: 0.256    # $ за 1 млн входных токенов
-  price_output_per_1m: 1.02    # $ за 1 млн выходных токенов
+  price_input_per_1m: 0.13   # $ за 1 млн входных токенов
+  price_output_per_1m: 0.52  # $ за 1 млн выходных токенов
   daily_budget: 0.5            # $ в сутки, при достижении обработка останавливается
-  min_score: 0.5     # порог интереса новости, от 0 до 1
+  min_score: 0.6     # порог интереса новости, от 0 до 1
+
 channel:
-  topic: "технологии и искусственный интеллект"   # тематика канала
+  topic: "экономика и финансы"                     # тематика канала
   language: "ru"                                   # язык постов
   tone: "нейтральный, деловой, без кликбейта"      # тон пересказа
   max_title_chars: 90                              # длина заголовка поста
@@ -74,16 +75,22 @@ publisher:
   image_types: ["image/jpeg", "image/png", "image/webp"]
   # фото по URL в Bot API: не больше 5 МБ
   image_max_bytes: 5242880
-  min_interval_min: 10
+  min_interval_min: 22
+  max_queued_per_source: 4   # постов одного источника в очереди (0 — без лимита)
   max_retries: 3
-  quiet_hours: ["23:00", "07:00"]
+  quiet_hours: ["00:00", "07:00"]
   # подпись в конце поста: знак, затем название канала ссылкой; пустой url — без подписи
   footer_mark: "🔵"
-  footer_title: "try_1"
-  footer_url: "https://t.me/news_try"
+  footer_title: "SPOTS | Экономика&Финансы"
+  footer_url: "https://t.me/spots_fin"
   # насколько снижается приоритет поста в очереди за час возраста (0 — только по оценке):
   # при 0.02 новость 12-часовой давности теряет 0.24, свежая 0.6 выйдет раньше вчерашней 0.8
   score_decay_per_h: 0.02
+
+ui:
+  single_screen: true        # в чате с ботом висит только последний экран
+  delete_user_messages: true # удалять и команды администратора
+  delete_batch_size: 100     # лимит deleteMessages в Bot API
 
 bot:
   refusal_cooldown_s: 60

@@ -16,6 +16,7 @@ from app.db.models import ProcessedPost
 from app.db.repositories.news import StaleStatusError
 from app.domain.enums import NewsStatus
 from app.domain.status import ensure_transition
+from app.pipeline.queue_limit import AdmitOutcome, AdmitResult
 from tests.bot_helpers import callback_update, make_bot, message_update
 from tests.config_helpers import base_section, bot_config
 
@@ -109,8 +110,33 @@ class SourceRepo:
         return Source()
 
 
+class Admission:
+    """Подменяет постановку в очередь: запоминает вызовы и переводит статус."""
+
+    def __init__(self, db: Db, displaced: int | None = None) -> None:
+        self.db = db
+        self.displaced = displaced
+        self.calls: list[tuple[int, int, NewsStatus, bool]] = []
+
+    async def admit(
+        self,
+        session: object,
+        news_id: int,
+        source_id: int,
+        expected: NewsStatus,
+        *,
+        forced: bool = False,
+    ) -> AdmitResult:
+        self.calls.append((news_id, source_id, expected, forced))
+        if self.db.news.status is not expected:
+            raise StaleStatusError(news_id, expected)
+        self.db.news.status = NewsStatus.APPROVED
+        outcome = AdmitOutcome.ADMITTED_DISPLACED if self.displaced else AdmitOutcome.ADMITTED
+        return AdmitResult(outcome, NewsStatus.APPROVED, displaced_id=self.displaced)
+
+
 class Chat:
-    def __init__(self, db: Db) -> None:
+    def __init__(self, db: Db, admission: Admission | None = None) -> None:
         @asynccontextmanager
         async def scope() -> AsyncIterator[Db]:
             yield db
@@ -132,6 +158,7 @@ class Chat:
                     cfg=CFG,
                     snooze_min=SNOOZE,
                     clock=lambda: NOW,
+                    admission=admission,  # type: ignore[arg-type]
                 )
             },
         )
@@ -253,3 +280,38 @@ def test_real_repositories_fit_protocols() -> None:
         snooze_min=SNOOZE,
     )
     assert deps.snooze_min == SNOOZE
+
+
+async def test_publish_button_goes_through_admission() -> None:
+    db = Db()
+    admission = Admission(db)
+    chat = Chat(db, admission)
+    await chat.press(ReviewActionType.PUBLISH)
+
+    assert admission.calls == [(1, 1, NewsStatus.PENDING_REVIEW, True)]
+    assert db.news.status is NewsStatus.APPROVED
+
+
+async def test_publish_reports_displaced_post() -> None:
+    db = Db()
+    chat = Chat(db, Admission(db, displaced=42))
+    await chat.press(ReviewActionType.PUBLISH)
+
+    [edit] = chat.edits()
+    assert texts.REVIEW_DISPLACED.strip(" ·") in (edit.text or "")
+
+
+async def test_reject_does_not_use_admission() -> None:
+    db = Db()
+    admission = Admission(db)
+    chat = Chat(db, admission)
+    await chat.press(ReviewActionType.REJECT)
+
+    assert admission.calls == []
+    assert db.news.status is NewsStatus.REJECTED
+
+
+async def test_publish_without_admission_unchanged() -> None:
+    db = Db()
+    await Chat(db).press(ReviewActionType.PUBLISH)
+    assert db.news.status is NewsStatus.APPROVED

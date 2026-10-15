@@ -94,6 +94,7 @@ REVIEW_ASK_SUMMARY = "Пришлите новый текст пересказа 
 REVIEW_SUMMARY_TOO_LONG = "Текст длиннее {limit} символов. Сократите и пришлите ещё раз."
 REVIEW_SUMMARY_EMPTY = "Текст пустой. Пришлите новый пересказ."
 REVIEW_EDITED = "Пересказ обновлён, пост одобрен к публикации."
+REVIEW_DISPLACED = " · вытеснен слабейший пост источника из очереди"
 REVIEW_DECISIONS = {
     "publish": "✅ Одобрено к публикации",
     "reject": "🚫 Отклонено",
@@ -134,9 +135,19 @@ def queue_eta_text(eta: datetime, today: datetime) -> str:
     return f"≈{eta:%d.%m %H:%M}"
 
 
-def queue_line(number: int, title: str, source: str, score: float, eta: str | None) -> str:
+def source_load(used: int, limit: int) -> str:
+    """Заполненность очереди источника: «2/4», «🔒4/4»; при limit = 0 пусто."""
+    if limit <= 0:
+        return ""
+    lock = "🔒" if used >= limit else ""
+    return f" {lock}{used}/{limit}"
+
+
+def queue_line(
+    number: int, title: str, source: str, score: float, eta: str | None, load: str = ""
+) -> str:
     """Строка вкладки «В очереди»; title и source уже экранированы."""
-    line = f"{number}. {title} — {source} · ★{score:.2f}"
+    line = f"{number}. {title} — {source}{load} · ★{score:.2f}"
     return f"{line} · {eta}" if eta else line
 
 
@@ -219,6 +230,7 @@ def failed_news_line(number: int, title: str, source: str, reason: str) -> str:
     return f"{number}. {title} — {source} · {RETRY_REASONS.get(reason, reason)}"
 
 
+STATUS_QUEUE_FULL = "Очередь заполнена у источников: {sources}"
 STATUS_ERRORS = "Открытых ошибок: {count} — /errors"
 STATUS_NO_ERRORS = "Открытых ошибок нет"
 

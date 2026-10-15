@@ -138,7 +138,15 @@ def _sources_block(report: DailyReport, cfg: DailyReportConfig) -> str | None:
         collected = sum(item.collected for item in rest)
         published = sum(item.published for item in rest)
         rows.append(f"{f'прочие ({len(rest)})':<20}{collected:>4}{published:>7}")
-    return "<b>Источники</b>\n" + PRE_OPEN + "\n".join(rows) + PRE_CLOSE
+    table = "<b>Источники</b>\n" + PRE_OPEN + "\n".join(rows) + PRE_CLOSE
+    limited = [item for item in report.sources if item.queue_limited]
+    if limited:
+        details = ", ".join(
+            f"{_escape(_cut(item.name, cfg.source_name_chars))} {item.queue_limited}"
+            for item in limited
+        )
+        table = f"{table}\nВытеснено лимитом: {details}"
+    return table
 
 
 def _funnel_block(report: DailyReport) -> str | None:
@@ -149,7 +157,9 @@ def _funnel_block(report: DailyReport) -> str | None:
         "<b>Воронка</b>",
         f"Собрано {funnel.collected} → дубли {funnel.duplicates} → "
         f"фильтры {funnel.filtered} → модель {funnel.processed} → "
-        f"не по теме {funnel.not_relevant} → на модерации {funnel.pending_review} → "
+        f"не по теме {funnel.not_relevant} → "
+        + (f"вытеснено лимитом источника {funnel.queue_limited} → " if funnel.queue_limited else "")
+        + f"на модерации {funnel.pending_review} → "
         f"в очереди {funnel.in_queue} → опубликовано {funnel.published}",
     ]
     if funnel.filtered_by_reason:

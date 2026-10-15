@@ -178,6 +178,7 @@ class PublisherConfig(BaseModel):
     image_types: list[str] = Field(min_length=1)
     image_max_bytes: int = Field(ge=1)
     min_interval_min: float = Field(ge=0)
+    max_queued_per_source: int = Field(ge=0)
     quiet_hours: list[str]
     max_retries: int = Field(ge=0)
     score_decay_per_h: float = Field(ge=0)
@@ -310,6 +311,16 @@ class BackupConfig(BaseModel):
     dir: Path
 
 
+class UiConfig(BaseModel):
+    """Секция ui: как выглядит чат администратора с ботом."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    single_screen: bool
+    delete_user_messages: bool
+    delete_batch_size: int = Field(ge=1)
+
+
 class BotConfig(BaseModel):
     """Секция bot: бот управления для администраторов."""
 
@@ -370,6 +381,7 @@ class Settings(BaseSettings):
     ai: AiConfig
     channel: ChannelProfile
     publisher: PublisherConfig
+    ui: UiConfig
     bot: BotConfig
     moderation: ModerationConfig
     alerts: AlertsConfig

@@ -1,10 +1,11 @@
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock
+from zoneinfo import ZoneInfo
 
 import pytest
 from aiogram.methods import AnswerCallbackQuery, EditMessageText, SendMessage, SendPhoto
@@ -35,7 +36,9 @@ CFG = PublisherConfig(
     **{**base_section("publisher"), "quiet_hours": ["23:00", "07:00"], "score_decay_per_h": DECAY}
 )
 SECONDS_PER_HOUR = 3600
+INTERVAL = timedelta(minutes=CFG.min_interval_min)
 CALLBACK_DATA_LIMIT = 64
+MAX_PER_SOURCE = 0  # по умолчанию заполненность не показываем
 
 
 @dataclass
@@ -110,6 +113,12 @@ class NewsRepo:
     async def count_prepared(self, statuses: Sequence[NewsStatus]) -> int:
         return len(self._ordered(statuses, 0))
 
+    async def queue_counts_by_source(self, statuses: Sequence[NewsStatus]) -> dict[int, int]:
+        counts: dict[int, int] = {}
+        for item in self._ordered(statuses, 0):
+            counts[item.source_id] = counts.get(item.source_id, 0) + 1
+        return counts
+
     async def claim_next(self, statuses: Sequence[NewsStatus], decay_per_h: float) -> NewsItem:
         return self._ordered(statuses, decay_per_h)[0]
 
@@ -177,6 +186,7 @@ def _deps(db: Db, now: datetime = NOW) -> QueueDeps:
         tz=TZ,
         page_size=PAGE_SIZE,
         title_chars=bot_config().queue_title_chars,
+        max_per_source=MAX_PER_SOURCE,
         clock=lambda: now,
         manual=ManualPublishDeps(publish=MagicMock(), news_repo=MagicMock()),
     )
@@ -203,6 +213,11 @@ def _cb(
 ) -> Update:
     data = QueueAction(action=action, tab=tab, page=page, news_id=news_id).pack()
     return callback_update(ADMIN, data)
+
+
+def _eta(moment: datetime) -> str:
+    """Ожидаемое время выхода в поясе канала, как его печатает бот."""
+    return f"≈{moment.astimezone(ZoneInfo(TZ)):%H:%M}"
 
 
 def _items(text: str) -> list[str]:
@@ -251,8 +266,8 @@ async def test_line_has_score_source_and_eta() -> None:
     db.add(2, 0.5)
     text, keyboard = await render_page(_deps(db), QueueTab.QUEUE, 0, NOW)
     lines = _items(text)
-    assert lines[0] == "1. Заголовок 1 — Пример · ★0.88 · ≈12:00"
-    assert lines[1] == "2. Заголовок 2 — Пример · ★0.50 · ≈12:10"
+    assert lines[0] == f"1. Заголовок 1 — Пример · ★0.88 · {_eta(NOW)}"
+    assert lines[1] == f"2. Заголовок 2 — Пример · ★0.50 · {_eta(NOW + INTERVAL)}"
     assert texts.queue_header("queue", 2, 1, 1) in text
     assert texts.QUEUE_HINT in text
     opens = [(label, a.news_id) for label, a in _buttons(keyboard) if a.action == "open"]
@@ -265,7 +280,11 @@ async def test_eta_respects_last_publication_and_quiet_hours() -> None:
     db.add(2, 0.8)
     db.last_published = NOW - timedelta(minutes=4)
     text, _ = await render_page(_deps(db), QueueTab.QUEUE, 0, NOW)
-    assert [line.rsplit(" ", 1)[1] for line in _items(text)] == ["≈12:06", "≈12:16"]
+    first = NOW + timedelta(minutes=CFG.min_interval_min - 4)
+    assert [line.rsplit(" ", 1)[1] for line in _items(text)] == [
+        _eta(first),
+        _eta(first + INTERVAL),
+    ]
 
     late = datetime(2026, 10, 10, 19, 55, tzinfo=UTC)  # 22:55 по Москве
     db.last_published = None
@@ -287,7 +306,7 @@ async def test_pagination_and_eta_continue_on_next_page() -> None:
     lines = _items(text)
     assert "страница 2 из 3" in text
     assert lines[0].startswith("6. Заголовок 6")
-    assert lines[0].endswith("≈12:50")  # шестой пост: 12:00 + 5 интервалов
+    assert lines[0].endswith(_eta(NOW + PAGE_SIZE * INTERVAL))  # шестой пост
     nav = [label for label, _ in _buttons(keyboard) if label in {"◀️", "▶️"}]
     assert nav == ["◀️", "▶️"]
 
@@ -437,7 +456,45 @@ def test_real_components_fit_protocols() -> None:
         tz=TZ,
         page_size=PAGE_SIZE,
         title_chars=bot_config().queue_title_chars,
+        max_per_source=MAX_PER_SOURCE,
         clock=base.clock,
         manual=ManualPublishDeps(publish=MagicMock(), news_repo=NewsRepository),
     )
     assert deps.page_size == PAGE_SIZE
+
+
+def _deps_with_limit(db: Db, limit: int) -> QueueDeps:
+    return replace(_deps(db), max_per_source=limit)
+
+
+async def test_source_load_shown_in_line() -> None:
+    db = Db()
+    db.add(1, 0.9)
+    db.add(2, 0.8)
+    text, _ = await render_page(_deps_with_limit(db, 4), QueueTab.QUEUE, 0, NOW)
+    assert all("Пример 2/4" in line for line in _items(text))
+
+
+async def test_full_source_marked_with_lock() -> None:
+    db = Db()
+    for news_id in range(1, 5):
+        db.add(news_id, 0.9)
+    text, _ = await render_page(_deps_with_limit(db, 4), QueueTab.QUEUE, 0, NOW)
+    assert all("Пример 🔒4/4" in line for line in _items(text))
+
+
+async def test_no_load_when_limit_disabled() -> None:
+    db = Db()
+    db.add(1, 0.9)
+    text, _ = await render_page(_deps_with_limit(db, 0), QueueTab.QUEUE, 0, NOW)
+    [line] = _items(text)
+    assert "/0" not in line and "🔒" not in line
+    assert "Пример ·" in line
+
+
+async def test_review_tab_has_no_load() -> None:
+    db = Db()
+    db.add(1, 0.9, status=S.PENDING_REVIEW)
+    text, _ = await render_page(_deps_with_limit(db, 4), QueueTab.REVIEW, 0, NOW)
+    [line] = _items(text)
+    assert "/4" not in line
