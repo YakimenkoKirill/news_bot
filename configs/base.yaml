@@ -48,7 +48,7 @@ pipeline:
   batch_size: 20
 
 ai:
-  model: "deepseek-flash"
+  model: "deepseek-flash-free"
   temperature: 0.3
   timeout_s: 60
   max_concurrency: 3
