@@ -356,3 +356,31 @@ def test_split_table_keeps_all_rows() -> None:
 def test_no_stray_tags_in_any_message() -> None:
     for message in _format(_full(), limit=250):
         assert not re.search(r"<pre>(?:(?!</pre>).)*$", message, re.S)
+
+
+def test_funnel_shows_queue_limited() -> None:
+    report = _report(funnel=Funnel(collected=10, processed=8, queue_limited=3))
+    assert "вытеснено лимитом источника 3 →" in _text(report)
+
+
+def test_funnel_hides_zero_queue_limited() -> None:
+    report = _report(funnel=Funnel(collected=10, processed=8))
+    assert "вытеснено лимитом" not in _text(report)
+
+
+def test_displaced_line_under_sources_table() -> None:
+    report = _report(
+        sources=(
+            SourceStats(1, "Bell", True, 0, collected=10, published=2, queue_limited=3),
+            SourceStats(2, "Хабр", True, 0, collected=5, published=1, queue_limited=1),
+            SourceStats(3, "РБК", True, 0, collected=4, published=1),
+        )
+    )
+    text = _text(report)
+    assert "Вытеснено лимитом: Bell 3, Хабр 1" in text
+    assert "РБК" in text, "источник без вытеснений остаётся в таблице"
+
+
+def test_no_displaced_line_without_limits() -> None:
+    report = _report(sources=(SourceStats(1, "Bell", True, 0, collected=1),))
+    assert "Вытеснено лимитом" not in _text(report)

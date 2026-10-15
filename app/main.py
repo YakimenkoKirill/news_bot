@@ -67,7 +67,7 @@ from app.logging import setup_logging
 from app.pipeline.ai.budget import BudgetGuard
 from app.pipeline.ai.client import DeepSeekClient
 from app.pipeline.ai.processor import AiProcessor, AiRepos
-from app.pipeline.queue_limit import QueueAdmission
+from app.pipeline.queue_limit import QueueAdmission, QueueLimitRepos, trim_queue
 from app.pipeline.retry import RetryDeps
 from app.pipeline.stage_ai import AiStageDeps, process_normalized_batch
 from app.pipeline.stage_normalize import NormalizeDeps, process_new_batch
@@ -405,6 +405,7 @@ def build_components(settings: Settings) -> list[Component]:
                     publication_repo=PublicationRepository,
                     settings_repo=SettingsRepository,
                     incident_repo=IncidentRepository,
+                    max_queued_per_source=settings.publisher.max_queued_per_source,
                     daily_budget=settings.ai.daily_budget,
                     channel_id=settings.telegram_channel_id,
                     tz=tz,
@@ -450,6 +451,7 @@ def build_components(settings: Settings) -> list[Component]:
                     tz=tz,
                     page_size=settings.bot.page_size,
                     title_chars=settings.bot.queue_title_chars,
+                    max_per_source=settings.publisher.max_queued_per_source,
                     clock=lambda: datetime.now(UTC),
                     manual=manual_deps,
                 ),
@@ -479,12 +481,52 @@ def build_components(settings: Settings) -> list[Component]:
     return [
         DatabaseComponent(engine),
         StartMarkerComponent(scope, started_at),
+        QueueTrimComponent(
+            scope,
+            settings.publisher.max_queued_per_source,
+            settings.publisher.score_decay_per_h,
+        ),
         http,
         ClosingComponent("ai_client", deepseek.close),
         BotPollingComponent(bot, dispatcher, setup_bot_commands),
         telegram,
         SchedulerComponent(scheduler, runner),
     ]
+
+
+class QueueTrimComponent:
+    """Приводит очередь к лимиту источника при старте.
+
+    Нужен, когда лимит включили или уменьшили, пока приложение не работало.
+    Ошибка пробрасывается: стартовать с неизвестным состоянием очереди нельзя.
+    """
+
+    name = "queue_trim"
+
+    def __init__(
+        self,
+        scope: Callable[[], AbstractAsyncContextManager[AsyncSession]],
+        max_per_source: int,
+        decay_per_h: float,
+    ) -> None:
+        self._scope = scope
+        self._max_per_source = max_per_source
+        self._decay_per_h = decay_per_h
+
+    async def start(self) -> None:
+        """Вытесняет лишние посты каждого источника одной транзакцией."""
+        try:
+            async with self._scope() as session:
+                repos = QueueLimitRepos(
+                    news=NewsRepository(session), sources=SourceRepository(session)
+                )
+                await trim_queue(repos, self._max_per_source, self._decay_per_h)
+        except Exception:
+            log.exception("queue_limit.trim_failed")
+            raise
+
+    async def stop(self) -> None:
+        """Ничего не делает."""
 
 
 class StartMarkerComponent:

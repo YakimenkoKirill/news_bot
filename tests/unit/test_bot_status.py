@@ -1,8 +1,9 @@
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -21,6 +22,7 @@ from tests.config_helpers import bot_config
 ADMIN = 111
 NOW = datetime(2026, 10, 10, 9, 0, tzinfo=UTC)
 MSK = ZoneInfo("Europe/Moscow")
+MAX_QUEUED = 4
 
 
 @dataclass
@@ -37,6 +39,8 @@ class Db:
     settings: dict[str, Any] = field(default_factory=dict)
     cost_since_arg: list[datetime] = field(default_factory=list)
     open_incidents: int = 0
+    queue_by_source: dict[int, int] = field(default_factory=dict)
+    names: dict[int, str] = field(default_factory=dict)
 
 
 class Repo:
@@ -45,6 +49,9 @@ class Repo:
 
     async def count_by_status(self) -> dict[NewsStatus, int]:
         return self.db.counts
+
+    async def queue_counts_by_source(self, statuses: Any = None) -> dict[int, int]:
+        return self.db.queue_by_source
 
     async def list_enabled(self, type: Any = None) -> Sequence[Src]:
         return self.db.sources
@@ -60,7 +67,10 @@ class Repo:
         assert open_only is True
         return self.db.open_incidents
 
-    async def get(self, key: str, default: Any = None) -> Any:
+    async def get(self, key: Any = None, default: Any = None) -> Any:
+        if isinstance(key, int):
+            name = self.db.names.get(key)
+            return SimpleNamespace(name=name) if name else None
         return self.db.settings.get(key, default)
 
     async def set(self, key: str, value: Any) -> None:
@@ -80,6 +90,7 @@ def _deps(db: Db) -> StatusDeps:
         publication_repo=Repo,
         settings_repo=Repo,
         incident_repo=Repo,
+        max_queued_per_source=MAX_QUEUED,
         daily_budget=Decimal("0.5"),
         channel_id=-100,
         tz=MSK,
@@ -188,8 +199,37 @@ def test_real_repositories_fit_protocols() -> None:
         publication_repo=PublicationRepository,
         settings_repo=SettingsRepository,
         incident_repo=IncidentRepository,
+        max_queued_per_source=MAX_QUEUED,
         daily_budget=Decimal("1"),
         channel_id=-100,
         tz=MSK,
     )
     assert deps.clock().tzinfo is UTC
+
+
+async def test_full_sources_listed() -> None:
+    db = Db(queue_by_source={1: MAX_QUEUED, 2: 1, 3: MAX_QUEUED + 1})
+    db.names = {1: "Bell", 2: "РБК", 3: "Хабр"}
+    text = await build_status(_deps(db))
+    assert f"Очередь заполнена у источников: Bell {MAX_QUEUED}/{MAX_QUEUED}" in text
+    assert f"Хабр {MAX_QUEUED + 1}/{MAX_QUEUED}" in text
+    assert "РБК" not in text
+
+
+async def test_no_line_when_nothing_is_full() -> None:
+    db = Db(queue_by_source={1: 1})
+    db.names = {1: "Bell"}
+    assert "Очередь заполнена" not in await build_status(_deps(db))
+
+
+async def test_no_line_when_limit_disabled() -> None:
+    db = Db(queue_by_source={1: 10})
+    db.names = {1: "Bell"}
+    deps = replace(_deps(db), max_queued_per_source=0)
+    assert "Очередь заполнена" not in await build_status(deps)
+
+
+async def test_deleted_source_has_fallback_name() -> None:
+    db = Db(queue_by_source={42: MAX_QUEUED})
+    text = await build_status(_deps(db))
+    assert f"источник #42 {MAX_QUEUED}/{MAX_QUEUED}" in text

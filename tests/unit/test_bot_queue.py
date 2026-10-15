@@ -1,6 +1,6 @@
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -38,6 +38,7 @@ CFG = PublisherConfig(
 SECONDS_PER_HOUR = 3600
 INTERVAL = timedelta(minutes=CFG.min_interval_min)
 CALLBACK_DATA_LIMIT = 64
+MAX_PER_SOURCE = 0  # по умолчанию заполненность не показываем
 
 
 @dataclass
@@ -112,6 +113,12 @@ class NewsRepo:
     async def count_prepared(self, statuses: Sequence[NewsStatus]) -> int:
         return len(self._ordered(statuses, 0))
 
+    async def queue_counts_by_source(self, statuses: Sequence[NewsStatus]) -> dict[int, int]:
+        counts: dict[int, int] = {}
+        for item in self._ordered(statuses, 0):
+            counts[item.source_id] = counts.get(item.source_id, 0) + 1
+        return counts
+
     async def claim_next(self, statuses: Sequence[NewsStatus], decay_per_h: float) -> NewsItem:
         return self._ordered(statuses, decay_per_h)[0]
 
@@ -179,6 +186,7 @@ def _deps(db: Db, now: datetime = NOW) -> QueueDeps:
         tz=TZ,
         page_size=PAGE_SIZE,
         title_chars=bot_config().queue_title_chars,
+        max_per_source=MAX_PER_SOURCE,
         clock=lambda: now,
         manual=ManualPublishDeps(publish=MagicMock(), news_repo=MagicMock()),
     )
@@ -448,7 +456,45 @@ def test_real_components_fit_protocols() -> None:
         tz=TZ,
         page_size=PAGE_SIZE,
         title_chars=bot_config().queue_title_chars,
+        max_per_source=MAX_PER_SOURCE,
         clock=base.clock,
         manual=ManualPublishDeps(publish=MagicMock(), news_repo=NewsRepository),
     )
     assert deps.page_size == PAGE_SIZE
+
+
+def _deps_with_limit(db: Db, limit: int) -> QueueDeps:
+    return replace(_deps(db), max_per_source=limit)
+
+
+async def test_source_load_shown_in_line() -> None:
+    db = Db()
+    db.add(1, 0.9)
+    db.add(2, 0.8)
+    text, _ = await render_page(_deps_with_limit(db, 4), QueueTab.QUEUE, 0, NOW)
+    assert all("Пример 2/4" in line for line in _items(text))
+
+
+async def test_full_source_marked_with_lock() -> None:
+    db = Db()
+    for news_id in range(1, 5):
+        db.add(news_id, 0.9)
+    text, _ = await render_page(_deps_with_limit(db, 4), QueueTab.QUEUE, 0, NOW)
+    assert all("Пример 🔒4/4" in line for line in _items(text))
+
+
+async def test_no_load_when_limit_disabled() -> None:
+    db = Db()
+    db.add(1, 0.9)
+    text, _ = await render_page(_deps_with_limit(db, 0), QueueTab.QUEUE, 0, NOW)
+    [line] = _items(text)
+    assert "/0" not in line and "🔒" not in line
+    assert "Пример ·" in line
+
+
+async def test_review_tab_has_no_load() -> None:
+    db = Db()
+    db.add(1, 0.9, status=S.PENDING_REVIEW)
+    text, _ = await render_page(_deps_with_limit(db, 4), QueueTab.REVIEW, 0, NOW)
+    [line] = _items(text)
+    assert "/4" not in line

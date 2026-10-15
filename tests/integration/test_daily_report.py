@@ -427,3 +427,29 @@ async def test_comparison_with_previous_day(
     assert report.previous.publications == 1
     assert report.previous.collected == 1
     assert report.previous.cost == Decimal("0.001")
+
+
+async def test_queue_limited_counted_separately(
+    session_factory: async_sessionmaker[AsyncSession], session: AsyncSession
+) -> None:
+    """Вытесненные лимитом не смешиваются с фильтрами возраста, языка и слов."""
+    fixture = Fixture(session_factory)
+    source_id = await fixture.source("A")
+    await fixture.news(source_id, status=S.FILTERED, created_at=msk(8), reason="queue_limit")
+    await fixture.news(source_id, status=S.FILTERED, created_at=msk(8), reason="queue_limit")
+    await fixture.news(source_id, status=S.FILTERED, created_at=msk(8), reason="too_old")
+    await fixture.news(
+        source_id, status=S.FILTERED, created_at=msk(8), reason="not_relevant", score=0.1
+    )
+
+    report = await fixture.report(session)
+    funnel = report.funnel
+    assert funnel.queue_limited == 2
+    assert funnel.filtered == 1, "в «отсеяно фильтрами» только too_old"
+    assert funnel.filtered_by_reason == {"too_old": 1}
+    assert funnel.not_relevant == 1
+
+    [stats] = report.sources
+    assert stats.queue_limited == 2
+    assert stats.filtered == 1
+    assert stats.not_relevant == 1

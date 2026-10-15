@@ -69,6 +69,10 @@ class QueueNewsRepo(Protocol):
         """Число новостей с пересказом в статусах."""
         raise NotImplementedError
 
+    async def queue_counts_by_source(self, statuses: Sequence[NewsStatus]) -> dict[int, int]:
+        """Размер очереди по источникам."""
+        raise NotImplementedError
+
     async def get(self, news_id: int) -> QueueNews | None:
         """Новость по id."""
         raise NotImplementedError
@@ -125,6 +129,7 @@ class QueueDeps:
         tz: Часовой пояс канала (app.timezone).
         page_size: Постов на странице (bot.page_size).
         title_chars: Длина заголовка в списке (bot.queue_title_chars).
+        max_per_source: Лимит постов источника в очереди; 0 — без лимита.
         clock: Текущее время.
         manual: Зависимости публикации вне очереди (publish_now).
     """
@@ -141,6 +146,7 @@ class QueueDeps:
     tz: str | ZoneInfo
     page_size: int
     title_chars: int
+    max_per_source: int
     clock: Callable[[], datetime]
     manual: ManualPublishDeps
 
@@ -189,6 +195,11 @@ async def render_page(
                 names[news.source_id] = source.name if source else ""
         paused = bool(await deps.settings_repo(session).get(PAUSED_SETTING, False))
         last = await deps.publication_repo(session).last_published_at(deps.channel_id)
+        load = (
+            await news_repo.queue_counts_by_source(QUEUE_TAB_STATUSES[QueueTab.QUEUE])
+            if deps.max_per_source
+            else {}
+        )
 
     lines = [texts.queue_header(tab.value, total, page + 1, pages)]
     if tab is QueueTab.QUEUE:
@@ -213,7 +224,17 @@ async def render_page(
         score = post.relevance_score
         if tab is QueueTab.QUEUE:
             eta_text = texts.queue_eta_text(eta.astimezone(zone), today) if eta else None
-            lines.append(texts.queue_line(number, title, source_name, score, eta_text))
+            used = load.get(news.source_id, 0)
+            lines.append(
+                texts.queue_line(
+                    number,
+                    title,
+                    source_name,
+                    score,
+                    eta_text,
+                    texts.source_load(used, deps.max_per_source),
+                )
+            )
         else:
             has_note = bool(post.review_note)
             lines.append(texts.review_line(number, title, source_name, score, has_note))

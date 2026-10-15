@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 from collections.abc import Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
@@ -16,6 +17,7 @@ from aiogram.filters import Command
 
 from app.bot import texts
 from app.domain.enums import NewsStatus
+from app.pipeline.queue_limit import QUEUE_STATUSES
 
 log = structlog.get_logger(__name__)
 
@@ -29,14 +31,26 @@ class StatusNewsRepo(Protocol):
         """Число новостей по статусам."""
         raise NotImplementedError
 
+    async def queue_counts_by_source(self, statuses: Sequence[NewsStatus]) -> dict[int, int]:
+        """Размер очереди по источникам."""
+        raise NotImplementedError
+
 
 class ErrorCounted(Protocol):
     error_count: int
 
 
+class NamedSource(Protocol):
+    name: str
+
+
 class StatusSourceRepo(Protocol):
     async def list_enabled(self, type: Any = None) -> Sequence[ErrorCounted]:
         """Включённые источники."""
+        raise NotImplementedError
+
+    async def get(self, source_id: int) -> NamedSource | None:
+        """Источник по id."""
         raise NotImplementedError
 
 
@@ -81,6 +95,7 @@ class StatusDeps:
     publication_repo: Callable[[Any], StatusPublicationRepo]
     settings_repo: Callable[[Any], StatusSettingsRepo]
     incident_repo: Callable[[Any], StatusIncidentRepo]
+    max_queued_per_source: int
     daily_budget: Decimal
     channel_id: int
     tz: ZoneInfo
@@ -102,6 +117,7 @@ async def build_status(deps: StatusDeps) -> str:
         last = await deps.publication_repo(session).last_published_at(deps.channel_id)
         paused = bool(await deps.settings_repo(session).get(PAUSED_SETTING, False))
         open_errors = await deps.incident_repo(session).count(open_only=True)
+        full = await _full_sources(session, deps)
 
     nonzero = [f"{status.value} — {count}" for status, count in counts.items() if count]
     problems = sum(1 for source in sources if source.error_count > 0)
@@ -117,8 +133,26 @@ async def build_status(deps: StatusDeps) -> str:
             texts.STATUS_ERRORS.format(count=open_errors)
             if open_errors
             else texts.STATUS_NO_ERRORS,
+            *([texts.STATUS_QUEUE_FULL.format(sources=full)] if full else []),
         ]
     )
+
+
+async def _full_sources(session: Any, deps: StatusDeps) -> str:
+    """Источники, у которых очередь заполнена до лимита, строкой «Имя 4/4»."""
+    limit = deps.max_queued_per_source
+    if limit <= 0:
+        return ""
+    counts = await deps.news_repo(session).queue_counts_by_source(QUEUE_STATUSES)
+    source_repo = deps.source_repo(session)
+    full: list[str] = []
+    for source_id, used in sorted(counts.items()):
+        if used < limit:
+            continue
+        source = await source_repo.get(source_id)
+        name = source.name if source is not None else f"источник #{source_id}"
+        full.append(f"{html.escape(name)} {used}/{limit}")
+    return ", ".join(full)
 
 
 async def _set_paused(message: Any, deps: StatusDeps, paused: bool) -> None:
