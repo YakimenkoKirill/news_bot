@@ -86,6 +86,11 @@ publisher:
   # при 0.02 новость 12-часовой давности теряет 0.24, свежая 0.6 выйдет раньше вчерашней 0.8
   score_decay_per_h: 0.02
 
+ui:
+  single_screen: true        # в чате с ботом висит только последний экран
+  delete_user_messages: true # удалять и команды администратора
+  delete_batch_size: 100     # лимит deleteMessages в Bot API
+
 bot:
   refusal_cooldown_s: 60
   page_size: 10

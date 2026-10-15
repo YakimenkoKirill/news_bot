@@ -310,6 +310,16 @@ class BackupConfig(BaseModel):
     dir: Path
 
 
+class UiConfig(BaseModel):
+    """Секция ui: как выглядит чат администратора с ботом."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    single_screen: bool
+    delete_user_messages: bool
+    delete_batch_size: int = Field(ge=1)
+
+
 class BotConfig(BaseModel):
     """Секция bot: бот управления для администраторов."""
 
@@ -370,6 +380,7 @@ class Settings(BaseSettings):
     ai: AiConfig
     channel: ChannelProfile
     publisher: PublisherConfig
+    ui: UiConfig
     bot: BotConfig
     moderation: ModerationConfig
     alerts: AlertsConfig

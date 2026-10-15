@@ -205,3 +205,22 @@ def test_invalid_send_at_rejected(configs_dir: Path, bad: str) -> None:
     (configs_dir / "prod.yaml").write_text(f'daily_report:\n  send_at: "{bad}"\n', encoding="utf-8")
     with pytest.raises(ValidationError, match="send_at"):
         load_settings(configs_dir, "prod")
+
+
+def test_ui_section(configs_dir: Path) -> None:
+    ui = load_settings(configs_dir).ui
+    assert ui.single_screen is True
+    assert ui.delete_user_messages is True
+    assert ui.delete_batch_size == 100
+
+
+def test_ui_batch_size_must_be_positive(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text("ui:\n  delete_batch_size: 0\n", encoding="utf-8")
+    with pytest.raises(ValidationError, match="delete_batch_size"):
+        load_settings(configs_dir, "prod")
+
+
+def test_ui_unknown_key_rejected(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text("ui:\n  surprise: 1\n", encoding="utf-8")
+    with pytest.raises(ValidationError, match="surprise"):
+        load_settings(configs_dir, "prod")
