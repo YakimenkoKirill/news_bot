@@ -21,6 +21,7 @@ from app.bot.preview import (
     build_preview,
     send_preview,
 )
+from app.bot.screen import new_screen
 from app.config import PublisherConfig
 from app.db.models import ProcessedPost
 from app.publisher.media import ImageCheck
@@ -97,12 +98,13 @@ class BotReviewNotifier:
         keyboard = review_keyboard(post.id)
         for admin_id in await self._deps.admin_ids():
             try:
-                if post.review_note:
-                    note = f"{REVIEW_NOTE_PREFIX} {html.escape(post.review_note)}"
-                    await self._bot.send_message(
-                        chat_id=admin_id, text=note, parse_mode=ParseMode.HTML
-                    )
-                await send_preview(self._bot, admin_id, preview, keyboard)
+                with new_screen():
+                    if post.review_note:
+                        note = f"{REVIEW_NOTE_PREFIX} {html.escape(post.review_note)}"
+                        await self._bot.send_message(
+                            chat_id=admin_id, text=note, parse_mode=ParseMode.HTML
+                        )
+                    await send_preview(self._bot, admin_id, preview, keyboard)
             except Exception:
                 log.exception("review.notify_failed", admin_id=admin_id, post_id=post.id)
 

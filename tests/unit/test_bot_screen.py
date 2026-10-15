@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 import structlog
+from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.methods import (
     DeleteMessage,
@@ -18,17 +19,18 @@ from aiogram.methods import (
     SendVideo,
 )
 from aiogram.methods.base import Response
-from aiogram.types import Chat, Message
+from aiogram.types import CallbackQuery, Chat, Message, User
 
 from app.bot.screen import (
     ScreenRequestMiddleware,
     ScreenTracker,
+    ScreenUpdateMiddleware,
     current_screen,
     new_screen,
     sent_message_ids,
 )
 from app.config import UiConfig
-from tests.bot_helpers import make_bot
+from tests.bot_helpers import TEST_TOKEN, FakeSession, make_bot
 from tests.config_helpers import base_section
 
 CHAT = 111
@@ -376,3 +378,124 @@ async def test_send_without_screen_is_its_own_screen() -> None:
     await middleware(Sender(_message(11)), aiobot, SendMessage(chat_id=CHAT, text="2"))
     assert bot.batches == [[10]], "вторая отправка — новый экран"
     await aiobot.session.close()
+
+
+class DeletingSession(FakeSession):
+    """Сессия, которая может провалить удаление входящего сообщения."""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        super().__init__()
+        self.error = error
+
+    async def make_request(
+        self,
+        bot: Any,
+        method: Any,
+        timeout: int | None = None,  # noqa: ASYNC109 сигнатура BaseSession
+    ) -> Any:
+        if isinstance(method, DeleteMessage) and self.error:
+            self.requests.append(method)
+            raise self.error
+        return await super().make_request(bot, method, timeout)
+
+
+def _incoming(chat_type: str = "private", error: Exception | None = None) -> tuple[Message, Any]:
+    """Входящее сообщение, привязанное к боту с фейковой сессией."""
+    session = DeletingSession(error)
+    bot = Bot(token=TEST_TOKEN, session=session)
+    message = Message(
+        message_id=7, date=NOW, chat=Chat(id=CHAT, type=chat_type), text="/status"
+    ).as_(bot)
+    return message, session
+
+
+def _deletes(session: DeletingSession) -> list[DeleteMessage]:
+    return [r for r in session.requests if isinstance(r, DeleteMessage)]
+
+
+def _update_middleware(cfg: UiConfig = CFG) -> ScreenUpdateMiddleware:
+    return ScreenUpdateMiddleware(cfg)
+
+
+async def test_update_middleware_opens_new_screen() -> None:
+    seen: list[str] = []
+
+    async def handler(event: Any, data: dict[str, Any]) -> str:
+        seen.append(current_screen())
+        return "ok"
+
+    middleware = _update_middleware()
+    message, _ = _incoming()
+    assert await middleware(handler, message, {}) == "ok"
+    await middleware(handler, message, {})
+
+    assert len(seen) == 2
+    assert seen[0] != seen[1], "каждое действие — свой экран"
+
+
+async def test_update_middleware_deletes_admin_message() -> None:
+    async def handler(event: Any, data: dict[str, Any]) -> None:
+        return None
+
+    message, session = _incoming()
+    await _update_middleware()(handler, message, {})
+    assert [m.message_id for m in _deletes(session)] == [7]
+
+
+async def test_admin_message_deleted_even_when_handler_fails() -> None:
+    async def handler(event: Any, data: dict[str, Any]) -> None:
+        raise RuntimeError("сломалось")
+
+    message, session = _incoming()
+    with pytest.raises(RuntimeError):
+        await _update_middleware()(handler, message, {})
+    assert len(_deletes(session)) == 1, "сообщение убрано, исключение проброшено"
+
+
+async def test_delete_error_is_swallowed() -> None:
+    async def handler(event: Any, data: dict[str, Any]) -> None:
+        return None
+
+    message, _ = _incoming(error=_bad_request("message to delete not found"))
+    with structlog.testing.capture_logs() as logs:
+        await _update_middleware()(handler, message, {})
+    assert any(e["event"] == "screen.incoming_delete_skipped" for e in logs)
+
+
+async def test_non_private_message_not_deleted() -> None:
+    async def handler(event: Any, data: dict[str, Any]) -> None:
+        return None
+
+    message, session = _incoming(chat_type="group")
+    await _update_middleware()(handler, message, {})
+    assert _deletes(session) == []
+
+
+@pytest.mark.parametrize("overrides", [{"delete_user_messages": False}, {"single_screen": False}])
+async def test_flags_disable_incoming_delete(overrides: dict[str, Any]) -> None:
+    async def handler(event: Any, data: dict[str, Any]) -> None:
+        return None
+
+    message, session = _incoming()
+    await _update_middleware(CFG.model_copy(update=overrides))(handler, message, {})
+    assert _deletes(session) == []
+
+
+async def test_callback_message_not_deleted() -> None:
+    seen: list[str] = []
+
+    async def handler(event: Any, data: dict[str, Any]) -> None:
+        seen.append(current_screen())
+
+    _, session = _incoming()
+    callback = CallbackQuery(
+        id="1",
+        from_user=User(id=CHAT, is_bot=False, first_name="a"),
+        chat_instance="ci",
+        data="x",
+    )
+    middleware = _update_middleware()
+    await middleware(handler, callback, {})
+    await middleware(handler, callback, {})
+    assert seen[0] != seen[1], "у нажатия кнопки тоже свой экран"
+    assert _deletes(session) == []

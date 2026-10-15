@@ -9,18 +9,19 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from contextlib import AbstractAsyncContextManager, contextmanager
 from contextvars import ContextVar
 from datetime import datetime
 from typing import Any, Protocol
 
 import structlog
-from aiogram import Bot
+from aiogram import BaseMiddleware, Bot
 from aiogram.client.session.middlewares.base import (
     BaseRequestMiddleware,
     NextRequestMiddlewareType,
 )
+from aiogram.enums import ChatType
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.methods import (
     SendAnimation,
@@ -31,7 +32,7 @@ from aiogram.methods import (
     SendVideo,
 )
 from aiogram.methods.base import Response, TelegramMethod
-from aiogram.types import Message
+from aiogram.types import Message, TelegramObject
 
 from app.config import UiConfig
 
@@ -215,3 +216,44 @@ def _private_chat_id(method: TelegramMethod[Any], channel_id: int) -> int | None
     if not isinstance(raw, int) or raw <= 0 or raw == channel_id:
         return None
     return raw
+
+
+class ScreenUpdateMiddleware(BaseMiddleware):
+    """Открывает экран на каждое действие администратора и убирает его сообщения.
+
+    Всё, что бот отправит в ответ на команду или кнопку, попадает в один экран и
+    заменяет прошлый. Сообщение администратора удаляется после обработки — в том
+    числе когда обработчик ничего не ответил или упал.
+    """
+
+    def __init__(self, cfg: UiConfig) -> None:
+        self._cfg = cfg
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        """Выполняет обработчик внутри нового экрана."""
+        with new_screen():
+            try:
+                return await handler(event, data)
+            finally:
+                if isinstance(event, Message) and self._should_delete(event):
+                    await self._delete_incoming(event)
+
+    def _should_delete(self, message: Message) -> bool:
+        if not (self._cfg.single_screen and self._cfg.delete_user_messages):
+            return False
+        return message.chat.type == ChatType.PRIVATE
+
+    @staticmethod
+    async def _delete_incoming(message: Message) -> None:
+        """Убирает сообщение администратора; не вышло — оставляем как есть."""
+        try:
+            await message.delete()
+        except TelegramBadRequest as exc:
+            log.info("screen.incoming_delete_skipped", error=exc.message)
+        except Exception:
+            log.exception("screen.incoming_delete_failed")

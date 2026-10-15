@@ -11,6 +11,7 @@ import structlog
 from aiogram.enums import ParseMode
 
 from app.bot import texts
+from app.bot.screen import new_screen
 from app.config import AlertsConfig
 from app.domain.alerts import AlertEvent, AlertKind
 
@@ -103,7 +104,10 @@ class AlertService:
             return
         for admin_id in admins:
             try:
-                await self._bot.send_message(chat_id=admin_id, text=text, parse_mode=ParseMode.HTML)
+                with new_screen():
+                    await self._bot.send_message(
+                        chat_id=admin_id, text=text, parse_mode=ParseMode.HTML
+                    )
             except Exception:
                 log.exception("alert.send_failed", admin_id=admin_id, key=event.key)
         log.info("alert.sent", key=event.key, kind=event.kind.value)

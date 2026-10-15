@@ -8,6 +8,7 @@ from aiogram.methods import SendMessage
 
 from app.alerts import AlertService, format_alert
 from app.bot import texts
+from app.bot.screen import current_screen
 from app.config import AlertsConfig
 from app.domain.alerts import AlertEvent, AlertKind, AlertSink
 from tests.config_helpers import base_section
@@ -221,3 +222,18 @@ async def test_without_store_behaviour_unchanged() -> None:
 def test_is_alert_sink() -> None:
     sink: AlertSink = AlertService(FakeBot(), ADMINS, CFG)
     assert sink is not None
+
+
+async def test_each_admin_gets_own_screen() -> None:
+    """Алерт двум админам — два экрана: сообщение одного не удалит сообщение другого."""
+    screens: list[str] = []
+
+    class ScreenBot(FakeBot):
+        async def send_message(self, **kwargs: Any) -> None:
+            screens.append(current_screen())
+            await super().send_message(**kwargs)
+
+    bot = ScreenBot()
+    await AlertService(bot, ADMINS, CFG, clock=Clock()).emit(_event())
+    assert len(screens) == len(ADMINS)
+    assert len(set(screens)) == len(ADMINS)

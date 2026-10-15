@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from app.bot.screen import current_screen
 from app.config import DailyReportConfig, MetricsConfig
 from app.reports import sender as sender_module
 from app.reports.daily import DailyContext
@@ -201,3 +202,23 @@ async def test_day_boundary_uses_channel_timezone() -> None:
     sender, bot = _sender(db, msk(23, 30))
     assert await sender.send_due(datetime(2026, 10, 14, 21, 0, tzinfo=UTC)) is False
     assert bot.sent == []
+
+
+async def test_report_parts_share_screen_per_admin() -> None:
+    """Все части отчёта одному админу — один экран, у разных админов экраны разные."""
+    screens: list[tuple[int, str]] = []
+
+    class ScreenBot(Bot):
+        async def send_message(self, **kwargs: Any) -> None:
+            screens.append((kwargs["chat_id"], current_screen()))
+            await super().send_message(**kwargs)
+
+    sender, _ = _sender(Db(), msk(23, 30), bot=ScreenBot())
+    assert await sender.send_due(msk(23, 30)) is True
+
+    by_admin: dict[int, set[str]] = {}
+    for chat_id, token in screens:
+        by_admin.setdefault(chat_id, set()).add(token)
+    assert set(by_admin) == set(ADMINS)
+    assert all(len(tokens) == 1 for tokens in by_admin.values())
+    assert len({next(iter(t)) for t in by_admin.values()}) == len(ADMINS)

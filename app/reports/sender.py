@@ -10,6 +10,7 @@ import structlog
 from aiogram.enums import ParseMode
 
 from app.bot.keyboards import report_keyboard
+from app.bot.screen import new_screen
 from app.config import DailyReportConfig
 from app.reports.service import ReportDeps, ReportPeriod, build_report
 
@@ -87,13 +88,14 @@ class DailyReportSender:
         delivered = False
         for admin_id in await self._resolve_admins():
             try:
-                for index, text in enumerate(messages, 1):
-                    await self._bot.send_message(
-                        chat_id=admin_id,
-                        text=text,
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=keyboard if index == len(messages) else None,
-                    )
+                with new_screen():
+                    for index, text in enumerate(messages, 1):
+                        await self._bot.send_message(
+                            chat_id=admin_id,
+                            text=text,
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=keyboard if index == len(messages) else None,
+                        )
             except Exception:
                 log.exception("report.send_failed", admin_id=admin_id)
                 continue
