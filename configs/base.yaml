@@ -48,7 +48,7 @@ pipeline:
   batch_size: 20
 
 ai:
-  model: "deepseek-v4-flash"
+  model: "deepseek-flash"
   temperature: 0.3
   timeout_s: 60
   max_concurrency: 3
@@ -75,7 +75,7 @@ publisher:
   image_types: ["image/jpeg", "image/png", "image/webp"]
   # фото по URL в Bot API: не больше 5 МБ
   image_max_bytes: 5242880
-  min_interval_min: 10
+  min_interval_min: 22
   max_retries: 3
   quiet_hours: ["00:00", "07:00"]
   # подпись в конце поста: знак, затем название канала ссылкой; пустой url — без подписи
