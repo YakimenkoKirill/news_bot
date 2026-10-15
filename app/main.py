@@ -67,6 +67,7 @@ from app.logging import setup_logging
 from app.pipeline.ai.budget import BudgetGuard
 from app.pipeline.ai.client import DeepSeekClient
 from app.pipeline.ai.processor import AiProcessor, AiRepos
+from app.pipeline.queue_limit import QueueAdmission
 from app.pipeline.retry import RetryDeps
 from app.pipeline.stage_ai import AiStageDeps, process_normalized_batch
 from app.pipeline.stage_normalize import NormalizeDeps, process_new_batch
@@ -279,6 +280,12 @@ def build_components(settings: Settings) -> list[Component]:
         dedup=settings.dedup,
         batch_size=settings.pipeline.batch_size,
     )
+    admission = QueueAdmission(
+        news_repo=NewsRepository,
+        source_repo=SourceRepository,
+        max_per_source=settings.publisher.max_queued_per_source,
+        decay_per_h=settings.publisher.score_decay_per_h,
+    )
     ai_deps = AiStageDeps(
         session_scope=scope,
         news_repo=NewsRepository,
@@ -291,6 +298,7 @@ def build_components(settings: Settings) -> list[Component]:
         sink=alerts,
         batch_size=settings.pipeline.batch_size,
         max_concurrency=settings.ai.max_concurrency,
+        admission=admission,
     )
     publish_deps = PublishDeps(
         session_scope=scope,
@@ -427,6 +435,7 @@ def build_components(settings: Settings) -> list[Component]:
                     source_repo=SourceRepository,
                     cfg=settings.publisher,
                     snooze_min=settings.moderation.snooze_min,
+                    admission=admission,
                 ),
                 "queue_deps": QueueDeps(
                     session_scope=scope,
@@ -454,6 +463,7 @@ def build_components(settings: Settings) -> list[Component]:
                         session_scope=scope,
                         news_repo=NewsRepository,
                         post_repo=ProcessedPostRepository,
+                        admission=admission,
                     ),
                     silent_kinds=silent_kinds,
                     page_size=settings.bot.page_size,

@@ -7,10 +7,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
+from typing import Any, Protocol
 
 import structlog
 
@@ -203,3 +203,40 @@ async def trim_queue(repos: QueueLimitRepos, max_per_source: int, decay_per_h: f
     if displaced:
         log.info("queue_limit.trimmed", displaced=displaced, max_per_source=max_per_source)
     return displaced
+
+
+@dataclass(frozen=True)
+class QueueAdmission:
+    """Общий вход в очередь: одна настройка лимита на все пути постановки.
+
+    Attributes:
+        news_repo, source_repo: Фабрики репозиториев от сессии.
+        max_per_source: Постов источника в очереди (publisher.max_queued_per_source).
+        decay_per_h: Снижение приоритета за час (publisher.score_decay_per_h).
+    """
+
+    news_repo: Callable[[Any], LimitNewsRepo]
+    source_repo: Callable[[Any], LimitSourceRepo]
+    max_per_source: int
+    decay_per_h: float
+
+    async def admit(
+        self,
+        session: Any,
+        news_id: int,
+        source_id: int,
+        expected: NewsStatus,
+        *,
+        forced: bool = False,
+    ) -> AdmitResult:
+        """Ставит пост в очередь в уже открытой транзакции."""
+        repos = QueueLimitRepos(news=self.news_repo(session), sources=self.source_repo(session))
+        return await admit_to_queue(
+            news_id,
+            source_id,
+            expected,
+            repos,
+            self.max_per_source,
+            self.decay_per_h,
+            forced=forced,
+        )

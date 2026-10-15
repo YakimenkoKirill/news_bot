@@ -13,6 +13,7 @@ import structlog
 from app.db.models import ProcessedPost
 from app.db.repositories.news import StaleStatusError
 from app.domain.enums import NewsStatus
+from app.pipeline.queue_limit import QueueAdmission
 
 log = structlog.get_logger(__name__)
 
@@ -21,6 +22,7 @@ class RetryNews(Protocol):
     """Новость для повтора (NewsItem подходит структурно)."""
 
     id: int
+    source_id: int
     status: NewsStatus
 
 
@@ -57,11 +59,13 @@ class RetryDeps:
     Attributes:
         session_scope: Открывает транзакцию БД.
         news_repo, post_repo: Репозитории для сессии.
+        admission: Лимит источника при возврате в очередь; None — без лимита.
     """
 
     session_scope: Callable[[], AbstractAsyncContextManager[Any]]
     news_repo: Callable[[Any], RetryNewsRepo]
     post_repo: Callable[[Any], RetryPostRepo]
+    admission: QueueAdmission | None = None
 
 
 class RetryOutcome(StrEnum):
@@ -112,7 +116,12 @@ async def retry_failed(news_id: int, deps: RetryDeps) -> RetryResult:
             target = NewsStatus.APPROVED if post is not None else NewsStatus.NORMALIZED
             outcome = RetryOutcome.TO_QUEUE if post is not None else RetryOutcome.TO_AI
             try:
-                await news_repo.set_status(news_id, NewsStatus.FAILED, target)
+                if post is not None and deps.admission is not None:
+                    await deps.admission.admit(
+                        session, news_id, news.source_id, NewsStatus.FAILED, forced=True
+                    )
+                else:
+                    await news_repo.set_status(news_id, NewsStatus.FAILED, target)
             except StaleStatusError:
                 current = await news_repo.get(news_id)
                 result = RetryResult(

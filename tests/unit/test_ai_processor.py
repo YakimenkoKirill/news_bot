@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+import structlog
 
 from app.config import AiConfig, ChannelProfile
 from app.db.models import ProcessedPost
@@ -19,6 +20,7 @@ from app.pipeline.ai.client import (
 )
 from app.pipeline.ai.processor import AiProcessor, AiRepos
 from app.pipeline.ai.prompts import PROMPT_VERSION
+from app.pipeline.queue_limit import AdmitOutcome, AdmitResult
 from tests.config_helpers import base_section
 
 CFG = AiConfig(**{**base_section("ai"), "min_score": 0.5})
@@ -32,6 +34,7 @@ SOURCE_TEXT = (
 @dataclass
 class News:
     id: int = 1
+    source_id: int = 7
     title: str = "Nvidia представила процессор"
     url: str = "https://news.example/1"
     clean_text: str | None = SOURCE_TEXT
@@ -203,3 +206,69 @@ def test_real_components_fit_protocols() -> None:
     client = DeepSeekClient.__new__(DeepSeekClient)
     repos = AiRepos(news=NewsRepository(MagicMock()), posts=ProcessedPostRepository(MagicMock()))
     assert isinstance(AiProcessor(client, PROFILE, repos, CFG), AiProcessor)
+
+
+class Admit:
+    """Подменяет постановку в очередь: запоминает вызовы и отдаёт исход."""
+
+    def __init__(self, outcome: AdmitOutcome = AdmitOutcome.ADMITTED) -> None:
+        self.outcome = outcome
+        self.calls: list[tuple[int, int]] = []
+
+    async def __call__(self, news_id: int, source_id: int) -> AdmitResult:
+        self.calls.append((news_id, source_id))
+        status = (
+            NewsStatus.FILTERED if self.outcome is AdmitOutcome.REJECTED else NewsStatus.APPROVED
+        )
+        return AdmitResult(self.outcome, status)
+
+
+async def _run_with_admit(
+    admit: Admit, mode: ModerationMode = ModerationMode.AUTO
+) -> tuple[NewsStatus, FakeNewsRepo]:
+    news_repo, post_repo = FakeNewsRepo(), FakePostRepo()
+    processor = AiProcessor(
+        FakeClient([_answer()]),
+        PROFILE,
+        AiRepos(news=news_repo, posts=post_repo, admit=admit),
+        CFG,
+    )
+    status = await processor.process(News(), Source(mode))
+    return status, news_repo
+
+
+async def test_admit_called_with_news_and_source() -> None:
+    admit = Admit()
+    status, news = await _run_with_admit(admit)
+
+    assert status is NewsStatus.APPROVED
+    assert admit.calls == [(1, 7)]
+    assert news.history == [NewsStatus.PROCESSED], "в approved переводит сам admit"
+
+
+@pytest.mark.parametrize("outcome", [AdmitOutcome.ADMITTED, AdmitOutcome.ADMITTED_DISPLACED])
+async def test_admitted_outcomes_give_approved(outcome: AdmitOutcome) -> None:
+    status, _ = await _run_with_admit(Admit(outcome))
+    assert status is NewsStatus.APPROVED
+
+
+async def test_rejected_by_queue_limit_gives_filtered() -> None:
+    with structlog.testing.capture_logs() as logs:
+        status, _ = await _run_with_admit(Admit(AdmitOutcome.REJECTED))
+
+    assert status is NewsStatus.FILTERED
+    assert any(entry["event"] == "ai.queue_limit" for entry in logs)
+
+
+async def test_review_mode_does_not_call_admit() -> None:
+    """У источника с модерацией лимит проверяется при одобрении, а не здесь."""
+    admit = Admit()
+    status, _ = await _run_with_admit(admit, ModerationMode.REVIEW)
+    assert status is NewsStatus.PENDING_REVIEW
+    assert admit.calls == []
+
+
+async def test_without_admit_behaviour_unchanged() -> None:
+    status, news, _, _ = await _run([_answer()])
+    assert status is NewsStatus.APPROVED
+    assert news.history == [NewsStatus.PROCESSED, NewsStatus.APPROVED]

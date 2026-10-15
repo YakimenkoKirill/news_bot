@@ -19,6 +19,7 @@ NEWS_ID = 7
 @dataclass
 class News:
     id: int = NEWS_ID
+    source_id: int = 1
     status: NewsStatus = S.FAILED
 
 
@@ -149,3 +150,60 @@ def test_real_repositories_fit_protocols() -> None:
         session_scope=MagicMock(), news_repo=NewsRepository, post_repo=ProcessedPostRepository
     )
     assert deps.news_repo is NewsRepository
+
+
+class Admission:
+    """Подменяет постановку в очередь, запоминая аргументы."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, int, NewsStatus, bool]] = []
+
+    async def admit(
+        self,
+        session: object,
+        news_id: int,
+        source_id: int,
+        expected: NewsStatus,
+        *,
+        forced: bool = False,
+    ) -> object:
+        self.calls.append((news_id, source_id, expected, forced))
+        self.db_status(news_id)
+        return object()
+
+    db: Db | None = None
+
+    def db_status(self, news_id: int) -> None:
+        if self.db is not None:
+            self.db.news[news_id].status = S.APPROVED
+
+
+def _deps_with_admission(db: Db, admission: Admission) -> RetryDeps:
+    base = _deps(db)
+    admission.db = db
+    return RetryDeps(
+        session_scope=base.session_scope,
+        news_repo=base.news_repo,
+        post_repo=base.post_repo,
+        admission=admission,  # type: ignore[arg-type]
+    )
+
+
+async def test_retry_to_queue_goes_through_admission() -> None:
+    db = _db(with_post=True)
+    admission = Admission()
+    result = await retry_failed(NEWS_ID, _deps_with_admission(db, admission))
+
+    assert result == RetryResult(RetryOutcome.TO_QUEUE, S.APPROVED)
+    assert admission.calls == [(NEWS_ID, 1, S.FAILED, True)], "решение админа — forced"
+    assert db.transitions == [], "статус меняет admit, а не прямой set_status"
+
+
+async def test_retry_to_ai_does_not_use_admission() -> None:
+    db = _db()
+    admission = Admission()
+    result = await retry_failed(NEWS_ID, _deps_with_admission(db, admission))
+
+    assert result.outcome is RetryOutcome.TO_AI
+    assert admission.calls == []
+    assert db.news[NEWS_ID].status is S.NORMALIZED

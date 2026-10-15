@@ -1,7 +1,7 @@
 import asyncio
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -14,6 +14,7 @@ from app.domain.enums import ModerationMode, NewsStatus
 from app.pipeline.ai.budget import BudgetExceeded
 from app.pipeline.ai.client import AiFatalError, AiUnavailableError
 from app.pipeline.ai.processor import AiRepos, ModeratedSource, ProcessableNews
+from app.pipeline.queue_limit import AdmitOutcome, AdmitResult
 from app.pipeline.stage_ai import AiStageDeps, AiStageReport, process_normalized_batch
 
 NOW = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
@@ -393,3 +394,52 @@ def test_real_components_fit_protocols() -> None:
         max_concurrency=1,
     )
     assert deps.batch_size == 1
+
+
+async def test_admission_passed_to_processor() -> None:
+    """Стадия отдаёт процессору постановку в очередь с expected=processed."""
+    seen: list[tuple[int, int, NewsStatus, bool]] = []
+
+    class Admission:
+        async def admit(
+            self,
+            session: Any,
+            news_id: int,
+            source_id: int,
+            expected: NewsStatus,
+            *,
+            forced: bool = False,
+        ) -> AdmitResult:
+            seen.append((news_id, source_id, expected, forced))
+            return AdmitResult(AdmitOutcome.ADMITTED, NewsStatus.APPROVED)
+
+    env = _env(2)
+    deps = replace(env.deps, admission=Admission())  # type: ignore[arg-type]
+
+    captured: list[AiRepos] = []
+    original = deps.processor
+
+    def processor(repos: AiRepos) -> Any:
+        captured.append(repos)
+        return original(repos)
+
+    await process_normalized_batch(NOW, replace(deps, processor=processor))
+
+    assert captured and all(repos.admit is not None for repos in captured)
+    for repos in captured:
+        assert repos.admit is not None
+        await repos.admit(1, 5)
+    assert all(call[2] is NewsStatus.PROCESSED and call[3] is False for call in seen)
+
+
+async def test_without_admission_processor_gets_none() -> None:
+    captured: list[AiRepos] = []
+    env = _env(1)
+    original = env.deps.processor
+
+    def processor(repos: AiRepos) -> Any:
+        captured.append(repos)
+        return original(repos)
+
+    await process_normalized_batch(NOW, replace(env.deps, processor=processor))
+    assert captured and all(repos.admit is None for repos in captured)

@@ -21,6 +21,7 @@ from app.config import PublisherConfig
 from app.db.models import ProcessedPost
 from app.db.repositories.news import StaleStatusError
 from app.domain.enums import NewsStatus
+from app.pipeline.queue_limit import QueueAdmission
 from app.publisher.formatter import PostNews, PostSource, build_post
 from app.publisher.limits import summary_budget, utf16_len
 
@@ -83,6 +84,7 @@ class ModerationDeps:
     source_repo: Callable[[Any], ModerationSourceRepo]
     cfg: PublisherConfig
     snooze_min: float
+    admission: QueueAdmission | None = None
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
 
 
@@ -139,17 +141,30 @@ async def on_review(
     else:
         new = NewsStatus.APPROVED if action is ReviewActionType.PUBLISH else NewsStatus.REJECTED
         reason = REJECT_REASON if new is NewsStatus.REJECTED else None
+        displaced: int | None = None
         try:
             async with deps.session_scope() as session:
-                await deps.news_repo(session).set_status(
-                    news.id, NewsStatus.PENDING_REVIEW, new, reason
-                )
+                if new is NewsStatus.APPROVED and deps.admission is not None:
+                    admitted = await deps.admission.admit(
+                        session,
+                        news.id,
+                        news.source_id,
+                        NewsStatus.PENDING_REVIEW,
+                        forced=True,
+                    )
+                    displaced = admitted.displaced_id
+                else:
+                    await deps.news_repo(session).set_status(
+                        news.id, NewsStatus.PENDING_REVIEW, new, reason
+                    )
         except StaleStatusError:
             current = await _load(deps, post.id)
             status = current[1].status.value if current else "неизвестно"
             await callback.answer(texts.REVIEW_ALREADY_DONE.format(status=status), show_alert=True)
             return
         decision = texts.REVIEW_DECISIONS[action.value]
+        if displaced is not None:
+            decision = f"{decision}{texts.REVIEW_DISPLACED}"
     log.info("moderation.decision", post_id=post.id, action=action.value, user_id=user_id)
     await callback.answer()
     await mark_message(callback, decision, who)
@@ -187,9 +202,14 @@ async def on_new_summary(message: Any, state: FSMContext, moderation_deps: Moder
     try:
         async with deps.session_scope() as session:
             await deps.post_repo(session).update_summary(post.id, text, edited_by=user_id or 0)
-            await deps.news_repo(session).set_status(
-                news.id, NewsStatus.PENDING_REVIEW, NewsStatus.APPROVED
-            )
+            if deps.admission is not None:
+                await deps.admission.admit(
+                    session, news.id, news.source_id, NewsStatus.PENDING_REVIEW, forced=True
+                )
+            else:
+                await deps.news_repo(session).set_status(
+                    news.id, NewsStatus.PENDING_REVIEW, NewsStatus.APPROVED
+                )
     except StaleStatusError:
         await state.clear()
         current = await _load(deps, post.id)
