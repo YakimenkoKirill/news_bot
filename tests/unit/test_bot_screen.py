@@ -18,7 +18,6 @@ from aiogram.methods import (
     SendPhoto,
     SendVideo,
 )
-from aiogram.methods.base import Response
 from aiogram.types import CallbackQuery, Chat, Message, User
 
 from app.bot.screen import (
@@ -262,9 +261,9 @@ class Sender:
         self.result = result
         self.calls = 0
 
-    async def __call__(self, bot: Any, method: Any) -> Response[Any]:
+    async def __call__(self, bot: Any, method: Any) -> Any:
         self.calls += 1
-        return Response(ok=True, result=self.result)
+        return self.result
 
 
 def _middleware(db: Db, bot: FakeBot, cfg: UiConfig = CFG) -> ScreenRequestMiddleware:
@@ -285,8 +284,8 @@ async def test_every_send_method_registers(method: Any) -> None:
     db, bot = Db(), FakeBot()
     aiobot, _ = make_bot()
     sender = Sender(_message(10))
-    response = await _middleware(db, bot)(sender, aiobot, method)
-    assert response.result is not None
+    result = await _middleware(db, bot)(sender, aiobot, method)
+    assert result is not None
     assert db.screens[CHAT] == (db.screens[CHAT][0], [10])
     await aiobot.session.close()
 
@@ -336,10 +335,10 @@ async def test_middleware_returns_response_unchanged() -> None:
     db, bot = Db(), FakeBot()
     aiobot, _ = make_bot()
     message = _message(10)
-    response = await _middleware(db, bot)(
+    result = await _middleware(db, bot)(
         Sender(message), aiobot, SendMessage(chat_id=CHAT, text="t")
     )
-    assert response.result is message
+    assert result is message
     await aiobot.session.close()
 
 
@@ -347,10 +346,10 @@ async def test_tracker_failure_does_not_break_send() -> None:
     db, bot = Db(fail_register=True), FakeBot()
     aiobot, _ = make_bot()
     message = _message(10)
-    response = await _middleware(db, bot)(
+    result = await _middleware(db, bot)(
         Sender(message), aiobot, SendMessage(chat_id=CHAT, text="t")
     )
-    assert response.result is message
+    assert result is message
     await aiobot.session.close()
 
 

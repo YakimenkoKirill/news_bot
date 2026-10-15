@@ -31,7 +31,7 @@ from aiogram.methods import (
     SendPhoto,
     SendVideo,
 )
-from aiogram.methods.base import Response, TelegramMethod
+from aiogram.methods.base import TelegramMethod
 from aiogram.types import Message, TelegramObject
 
 from app.config import UiConfig
@@ -196,18 +196,22 @@ class ScreenRequestMiddleware(BaseRequestMiddleware):
         make_request: NextRequestMiddlewareType[Any],
         bot: Bot,
         method: TelegramMethod[Any],
-    ) -> Response[Any]:
-        """Отправляет запрос и регистрирует сообщение в текущем экране."""
-        response = await make_request(bot, method)
+    ) -> Any:
+        """Отправляет запрос и регистрирует сообщение в текущем экране.
+
+        Цепочка middleware сессии отдаёт сам результат метода (Message или список
+        сообщений альбома), а не обёртку Response; он возвращается без изменений.
+        """
+        result = await make_request(bot, method)
         if not self._cfg.single_screen or not isinstance(method, TRACKED_METHODS):
-            return response
+            return result
         chat_id = _private_chat_id(method, self._channel_id)
         if chat_id is None:
-            return response
-        message_ids = sent_message_ids(response.result)
+            return result
+        message_ids = sent_message_ids(result)
         if message_ids:
             await self._tracker.on_sent(chat_id, message_ids, current_screen())
-        return response
+        return result
 
 
 def _private_chat_id(method: TelegramMethod[Any], channel_id: int) -> int | None:

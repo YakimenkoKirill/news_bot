@@ -35,6 +35,7 @@ from app.bot.handlers.sources import SourcesDeps
 from app.bot.handlers.status import StatusDeps
 from app.bot.moderation import BotReviewNotifier, ReviewNotifierDeps
 from app.bot.preview import PreviewDeps
+from app.bot.screen import ScreenRequestMiddleware, ScreenTracker, ScreenUpdateMiddleware
 from app.collectors.base import BaseCollector
 from app.collectors.health import SourceHealthTracker
 from app.collectors.http import HttpClient
@@ -57,6 +58,7 @@ from app.db.repositories.incidents import IncidentRepository
 from app.db.repositories.misc import AdminRepository, KeywordRepository, SettingsRepository
 from app.db.repositories.news import NewsRepository
 from app.db.repositories.posts import ProcessedPostRepository, PublicationRepository
+from app.db.repositories.screens import ScreenRepository
 from app.db.repositories.sources import SourceRepository
 from app.domain.alerts import AlertEvent, AlertKind
 from app.domain.enums import SourceType
@@ -183,6 +185,14 @@ def build_components(settings: Settings) -> list[Component]:
         http, settings.collectors.user_agent, timedelta(hours=settings.collectors.robots_ttl_h)
     )
     bot = create_bot(settings)
+    # Этот же бот публикует в канал, поэтому middleware исключает канал из экранов.
+    bot.session.middleware(
+        ScreenRequestMiddleware(
+            ScreenTracker(scope, ScreenRepository, bot, settings.ui, lambda: datetime.now(UTC)),
+            settings.telegram_channel_id,
+            settings.ui,
+        )
+    )
     admins = _Admins(settings, scope)
     silent_kinds = frozenset(settings.alerts.silent_kinds)
 
@@ -367,6 +377,7 @@ def build_components(settings: Settings) -> list[Component]:
         BotDeps(
             settings=settings,
             admin_repo=admins,
+            screen_middleware=ScreenUpdateMiddleware(settings.ui),
             routers=[
                 status_handlers.create_router(),
                 sources_handlers.create_router(),
