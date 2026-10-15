@@ -27,6 +27,8 @@ class Source:
 
 CFG = PublisherConfig(**base_section("publisher"))
 FOOTER = PostFooter.from_config(CFG)
+assert FOOTER is not None
+FOOTER_HTML = FOOTER.html
 
 
 class TagCollector(HTMLParser):
@@ -49,8 +51,7 @@ def test_reference_post() -> None:
     assert post.html == (
         "<b>Nvidia показала новый процессор</b>\n\n"
         "Процессор на 30% быстрее прошлой модели.\n\n"
-        "#железо #ИИ\n\n"
-        '🔵 <a href="https://t.me/news_try">try_1</a>'
+        "#железо #ИИ\n\n" + FOOTER_HTML
     )
     assert post.image_url == "https://cdn.example/1.jpg"
     assert _tags(post.html) == {"b", "a"}
@@ -95,8 +96,7 @@ def test_no_hashtags_line_omitted() -> None:
     post = build_post(Processed(hashtags=[]), News(), Source(), CFG)
     assert post.html == (
         "<b>Nvidia показала новый процессор</b>\n\n"
-        "Процессор на 30% быстрее прошлой модели.\n\n"
-        '🔵 <a href="https://t.me/news_try">try_1</a>'
+        "Процессор на 30% быстрее прошлой модели.\n\n" + FOOTER_HTML
     )
     assert "\n\n\n" not in post.html
 
