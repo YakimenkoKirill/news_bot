@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, get_args
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import structlog
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
 from pydantic.fields import FieldInfo
@@ -26,6 +27,9 @@ from pydantic_settings import (
 )
 
 from app.domain.alerts import AlertKind
+from app.publisher.slots import in_quiet_hours
+
+log = structlog.get_logger(__name__)
 
 Environment = Literal["dev", "prod"]
 
@@ -36,6 +40,7 @@ QUIET_HOURS_FORMAT = "%H:%M"
 QUIET_HOURS_BOUNDS = 2
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+ReportDay = Literal["previous", "current"]
 
 _yaml_data: ContextVar[dict[str, Any] | None] = ContextVar("_yaml_data", default=None)
 
@@ -262,6 +267,7 @@ class DailyReportConfig(BaseModel):
 
     enabled: bool
     send_at: str
+    report_day: ReportDay
     top_posts: int = Field(ge=1)
     top_sources: int = Field(ge=1)
     source_name_chars: int = Field(ge=1)
@@ -467,6 +473,30 @@ def _check_yaml_sections(data: dict[str, Any]) -> None:
         )
 
 
+def config_warnings(settings: Settings) -> list[str]:
+    """Несогласованности конфигурации, которые не запрещают запуск.
+
+    Args:
+        settings: Провалидированные настройки.
+
+    Returns:
+        Сообщения для лога; пустой список, если всё согласовано.
+    """
+    messages: list[str] = []
+    report = settings.daily_report
+    window = settings.publisher.quiet_window
+    if (
+        report.enabled
+        and report.report_day == "current"
+        and (window is None or not in_quiet_hours(report.send_time, window))
+    ):
+        messages.append(
+            f"daily_report.send_at = {report.send_at} вне publisher.quiet_hours: "
+            "отчёт за текущие сутки уйдёт до конца публикаций"
+        )
+    return messages
+
+
 def load_settings(configs_dir: Path | None = None, env: str | None = None) -> Settings:
     """Загружает настройки без кэша.
 
@@ -491,9 +521,12 @@ def load_settings(configs_dir: Path | None = None, env: str | None = None) -> Se
     _check_yaml_sections(data)
     token = _yaml_data.set(data)
     try:
-        return Settings(env=env_name)
+        settings = Settings(env=env_name)
     finally:
         _yaml_data.reset(token)
+    for message in config_warnings(settings):
+        log.warning("config.inconsistent", message=message)
+    return settings
 
 
 @lru_cache(maxsize=1)

@@ -24,7 +24,7 @@ ADMIN = 111
 CFG = DailyReportConfig(**base_section("daily_report"))
 METRICS = MetricsConfig(**base_section("metrics"))
 BUDGET = Decimal("0.5")
-NOW = datetime(2026, 10, 14, 23, 30, tzinfo=MSK)
+NOW = datetime(2026, 10, 15, 0, 5, tzinfo=MSK)
 CTX = DailyContext(tz=MSK, daily_budget=BUDGET, decay_per_h=0.02, top_posts=3, channel_id=-100)
 
 

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import structlog.testing
 import yaml
 from pydantic import ValidationError
 
@@ -195,9 +196,70 @@ def test_bot_error_preview_chars(configs_dir: Path) -> None:
 def test_daily_report_keys(configs_dir: Path) -> None:
     settings = load_settings(configs_dir)
     assert settings.daily_report.enabled is True
-    assert settings.daily_report.send_at == "23:30"
-    assert settings.daily_report.send_time.hour == 23
+    assert settings.daily_report.send_at == "00:05"
+    assert settings.daily_report.send_time.hour == 0
+    assert settings.daily_report.send_time.minute == 5
+    assert settings.daily_report.report_day == "previous"
     assert settings.scheduler.daily_report_every_min == 5
+
+
+def test_report_day_current_allowed(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text(
+        'daily_report:\n  report_day: "current"\n  send_at: "01:00"\n', encoding="utf-8"
+    )
+    assert load_settings(configs_dir, "prod").daily_report.report_day == "current"
+
+
+def test_invalid_report_day_rejected(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text(
+        'daily_report:\n  report_day: "вчера"\n', encoding="utf-8"
+    )
+    with pytest.raises(ValidationError, match="report_day"):
+        load_settings(configs_dir, "prod")
+
+
+def test_default_report_day_without_warning(configs_dir: Path) -> None:
+    """previous в тихие часы — предупреждений нет."""
+    with structlog.testing.capture_logs() as logs:
+        load_settings(configs_dir)
+    assert [entry for entry in logs if entry["event"] == "config.inconsistent"] == []
+
+
+def test_current_report_day_outside_quiet_hours_warns(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text(
+        'daily_report:\n  report_day: "current"\n  send_at: "23:30"\n', encoding="utf-8"
+    )
+    with structlog.testing.capture_logs() as logs:
+        settings = load_settings(configs_dir, "prod")
+    warnings = [entry for entry in logs if entry["event"] == "config.inconsistent"]
+    assert len(warnings) == 1
+    assert warnings[0]["log_level"] == "warning"
+    assert "до конца публикаций" in warnings[0]["message"]
+    assert config.config_warnings(settings)
+
+
+def test_current_report_day_inside_quiet_hours_without_warning(configs_dir: Path) -> None:
+    """send_at внутри тихих часов 00:00–07:00: публикаций за сутки уже не будет."""
+    (configs_dir / "prod.yaml").write_text(
+        'daily_report:\n  report_day: "current"\n  send_at: "00:30"\n', encoding="utf-8"
+    )
+    assert config.config_warnings(load_settings(configs_dir, "prod")) == []
+
+
+def test_disabled_report_does_not_warn(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text(
+        'daily_report:\n  enabled: false\n  report_day: "current"\n  send_at: "23:30"\n',
+        encoding="utf-8",
+    )
+    assert config.config_warnings(load_settings(configs_dir, "prod")) == []
+
+
+def test_without_quiet_hours_current_report_day_warns(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text(
+        'publisher:\n  quiet_hours: []\ndaily_report:\n  report_day: "current"\n',
+        encoding="utf-8",
+    )
+    assert config.config_warnings(load_settings(configs_dir, "prod")) != []
 
 
 @pytest.mark.parametrize("bad", ["25:00", "23-30", "вечером", ""])
