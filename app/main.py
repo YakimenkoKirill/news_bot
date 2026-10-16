@@ -240,6 +240,7 @@ def build_components(settings: Settings) -> list[Component]:
             health=health,
         ),
         settings.telegram,
+        settings.filters.max_age_h,
     )
     deepseek = DeepSeekClient(settings, settings.ai)
 

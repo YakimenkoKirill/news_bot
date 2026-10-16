@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 import structlog
@@ -92,11 +92,39 @@ def _chat_id(message: Any) -> int | None:
     return channel_id if channel_id is not None else getattr(message, "chat_id", None)
 
 
+def _message_date(message: Any) -> datetime | None:
+    value: datetime | None = getattr(message, "date", None)
+    if value is None:
+        log.warning("telegram.message_without_date", msg_id=getattr(message, "id", None))
+        return None
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _is_older(message: Any, cutoff: datetime) -> bool:
+    """Сообщение старше границы; без даты считается свежим (как при сохранении)."""
+    date = _message_date(message)
+    return date is not None and date < cutoff
+
+
+def _group_messages(messages: Sequence[Any]) -> list[list[Any]]:
+    """Собирает сообщения в альбомы по grouped_id, по возрастанию id."""
+    groups: dict[Any, list[Any]] = {}
+    for message in sorted(messages, key=lambda m: int(m.id)):
+        grouped_id = getattr(message, "grouped_id", None)
+        key = ("album", grouped_id) if grouped_id is not None else ("single", message.id)
+        groups.setdefault(key, []).append(message)
+    return list(groups.values())
+
+
 class TelegramCollector:
     """Компонент: подписка на каналы-источники и догрузка пропущенного при старте.
 
     Поток сообщения: AlbumBuffer -> отсев рекламы (по всем частям альбома) ->
     message_to_raw_item -> add_if_new + SourceHealthTracker.
+
+    Догрузка не уходит глубже max_age_h часов: такие сообщения всё равно отсеял бы
+    фильтр too_old, а в БД они занимали бы место. Новые сообщения в реальном
+    времени этой границы не знают.
     """
 
     name = "telegram_collector"
@@ -106,6 +134,7 @@ class TelegramCollector:
         client: Any,
         deps: TelegramDeps,
         config: TelegramConfig,
+        max_age_h: float,
         *,
         clock: Callable[[], datetime] | None = None,
         album_sleep: Sleep = asyncio.sleep,
@@ -113,6 +142,7 @@ class TelegramCollector:
         self._client = client
         self._deps = deps
         self._config = config
+        self._max_age = timedelta(hours=max_age_h)
         self._rules = AdRules.from_config(config)
         self._clock = clock or (lambda: datetime.now(UTC))
         self._albums = AlbumBuffer(config.album_wait_s, self._on_ready, sleep=album_sleep)
@@ -161,27 +191,43 @@ class TelegramCollector:
     async def _catch_up_channel(self, channel: _Channel) -> None:
         async with self._deps.session_scope() as session:
             min_id = await self._deps.news_repo(session).max_tg_message_id(channel.source.id)
+        cutoff = self._clock() - self._max_age
 
-        async def fetch() -> list[Any]:
-            return [
-                message
-                async for message in self._client.iter_messages(
-                    channel.entity, min_id=min_id or 0, limit=self._config.catch_up_limit
-                )
-            ]
+        async def fetch() -> tuple[list[Any], bool]:
+            """Читает сообщения от новых к старым до первого старше cutoff.
 
-        messages = await with_flood_wait(fetch, self._config)
-        groups: dict[Any, list[Any]] = {}
-        for message in sorted(messages, key=lambda m: int(m.id)):
-            grouped_id = getattr(message, "grouped_id", None)
-            key = ("album", grouped_id) if grouped_id is not None else ("single", message.id)
-            groups.setdefault(key, []).append(message)
+            Старая часть альбома, у которого уже собрана более новая часть, берётся
+            тоже: решение по дате принимается по самому новому сообщению альбома.
+
+            Returns:
+                Собранные сообщения и признак остановки по дате.
+            """
+            collected: list[Any] = []
+            albums: set[Any] = set()
+            async for message in self._client.iter_messages(
+                channel.entity, min_id=min_id or 0, limit=self._config.catch_up_limit
+            ):
+                grouped_id = getattr(message, "grouped_id", None)
+                if _is_older(message, cutoff) and grouped_id not in albums:
+                    return collected, True
+                if grouped_id is not None:
+                    albums.add(grouped_id)
+                collected.append(message)
+            return collected, False
+
+        messages, stopped_by_age = await with_flood_wait(fetch, self._config)
         added = 0
-        for parts in groups.values():
+        for parts in _group_messages(messages):
             added += await self._store_parts(channel, parts)
         async with self._deps.session_scope() as session:
             await self._deps.health(session).on_success(channel.source, added, self._clock())
-        log.info("telegram.caught_up", fetched=len(messages), new_items=added, min_id=min_id)
+        log.info(
+            "telegram.caught_up",
+            fetched=len(messages),
+            new_items=added,
+            min_id=min_id,
+            stopped_by_age=stopped_by_age,
+        )
 
     async def _resolve(self, sources: Sequence[Source]) -> dict[int, _Channel]:
         channels: dict[int, _Channel] = {}
