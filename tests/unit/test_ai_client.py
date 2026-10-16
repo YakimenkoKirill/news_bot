@@ -8,6 +8,7 @@ import httpx2
 import openai
 import pytest
 import structlog
+import structlog.testing
 
 from app.config import CONFIGS_DIR, AiConfig, Settings, load_settings
 from app.logging import setup_logging
@@ -31,10 +32,14 @@ def _status_error(cls: type[openai.APIStatusError], status: int) -> openai.APISt
 
 
 def _response(
-    content: str | None = '{"title": "t"}', usage: tuple[int, int] | None = (120, 40)
+    content: str | None = '{"title": "t"}',
+    usage: tuple[int, int] | None = (120, 40),
+    finish_reason: str | None = "stop",
 ) -> SimpleNamespace:
     return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+        choices=[
+            SimpleNamespace(message=SimpleNamespace(content=content), finish_reason=finish_reason)
+        ],
         usage=SimpleNamespace(prompt_tokens=usage[0], completion_tokens=usage[1])
         if usage
         else None,
@@ -115,6 +120,35 @@ async def test_request_parameters_and_result(settings: Settings) -> None:
     assert call["temperature"] == CFG.temperature
     assert call["response_format"] == {"type": "json_object"}
     assert call["timeout"] == CFG.timeout_s
+    assert call["max_tokens"] == CFG.max_output_tokens
+
+
+async def test_max_tokens_from_argument(settings: Settings) -> None:
+    fake = FakeOpenAI([_response()])
+    await _client(settings, fake).chat_json(MESSAGES, max_tokens=120)
+    [call] = fake.completions.calls
+    assert call["max_tokens"] == 120
+
+
+async def test_truncated_response_is_bad_response(settings: Settings) -> None:
+    """finish_reason = length: ответ обрезан, в канал он не попадёт."""
+    fake = FakeOpenAI([_response('{"title": "обрез', (150, 800), finish_reason="length")])
+    with (
+        structlog.testing.capture_logs() as logs,
+        pytest.raises(AiResponseError, match="обрезан"),
+    ):
+        await _client(settings, fake).chat_json(MESSAGES)
+    [entry] = [e for e in logs if e["event"] == "ai.truncated"]
+    assert (entry["prompt_tokens"], entry["completion_tokens"]) == (150, 800)
+    assert len(fake.completions.calls) == 1, "обрезанный ответ не повторяется внутри клиента"
+
+
+@pytest.mark.parametrize("finish_reason", ["stop", None, "content_filter"])
+async def test_other_finish_reasons_are_normal(
+    settings: Settings, finish_reason: str | None
+) -> None:
+    fake = FakeOpenAI([_response(finish_reason=finish_reason)])
+    assert (await _client(settings, fake).chat_json(MESSAGES)).content == '{"title": "t"}'
 
 
 async def test_retry_on_429(settings: Settings) -> None:

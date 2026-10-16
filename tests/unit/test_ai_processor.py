@@ -171,6 +171,25 @@ async def test_retry_after_empty_response() -> None:
     assert len(client.calls) == 2
 
 
+async def test_truncated_response_retried_then_post_created() -> None:
+    """Обрезанный ответ ведёт себя как плохой: один повтор, и пост создаётся."""
+    status, _, posts, client = await _run(
+        [AiResponseError("ответ модели обрезан по max_tokens"), _answer()]
+    )
+    assert status is NewsStatus.APPROVED
+    assert len(client.calls) == 2
+    assert len(posts.posts) == 1
+
+
+async def test_two_truncated_responses_fail() -> None:
+    truncated = AiResponseError("ответ модели обрезан по max_tokens")
+    status, news, posts, client = await _run([truncated, truncated])
+    assert status is NewsStatus.FAILED
+    assert news.reason == "bad_ai_response"
+    assert posts.posts == []
+    assert len(client.calls) == 2
+
+
 async def test_second_bad_response_fails() -> None:
     status, news, posts, client = await _run(
         [AiRawResponse("{}", 10, 5), AiResponseError("пустой")]

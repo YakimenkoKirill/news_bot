@@ -288,6 +288,16 @@ def test_ui_unknown_key_rejected(configs_dir: Path) -> None:
         load_settings(configs_dir, "prod")
 
 
+def test_ai_max_output_tokens(configs_dir: Path) -> None:
+    assert load_settings(configs_dir).ai.max_output_tokens == 800
+
+
+def test_zero_max_output_tokens_rejected(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text("ai:\n  max_output_tokens: 0\n", encoding="utf-8")
+    with pytest.raises(ValidationError, match="max_output_tokens"):
+        load_settings(configs_dir, "prod")
+
+
 def test_stuck_after_min_and_recover_interval(configs_dir: Path) -> None:
     settings = load_settings(configs_dir)
     assert settings.publisher.stuck_after_min == 15

@@ -153,6 +153,7 @@ class AiConfig(BaseModel):
     max_concurrency: int = Field(ge=1)
     max_retries: int = Field(ge=0)
     max_input_chars: int = Field(ge=1)
+    max_output_tokens: int = Field(ge=1)
     price_input_per_1m: Decimal = Field(ge=0)
     price_output_per_1m: Decimal = Field(ge=0)
     daily_budget: Decimal = Field(gt=0)
