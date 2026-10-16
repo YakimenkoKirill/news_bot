@@ -184,6 +184,7 @@ class PublisherConfig(BaseModel):
     image_max_bytes: int = Field(ge=1)
     min_interval_min: float = Field(ge=0)
     max_queued_per_source: int = Field(ge=0)
+    stuck_after_min: float = Field(gt=0)
     quiet_hours: list[str]
     max_retries: int = Field(ge=0)
     score_decay_per_h: float = Field(ge=0)
@@ -256,6 +257,7 @@ class SchedulerConfig(BaseModel):
     heartbeat_every_s: float = Field(gt=0)
     purge_every_h: float = Field(gt=0)
     daily_report_every_min: float = Field(gt=0)
+    recover_every_min: float = Field(gt=0)
     misfire_grace_s: int = Field(ge=1)
     failures_before_alert: int = Field(ge=1)
 

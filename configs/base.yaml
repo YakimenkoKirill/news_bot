@@ -77,6 +77,8 @@ publisher:
   image_max_bytes: 5242880
   min_interval_min: 34
   max_queued_per_source: 4   # постов одного источника в очереди (0 — без лимита)
+  # сколько минут пост может «отправляться» (scheduled), прежде чем его считают зависшим
+  stuck_after_min: 15
   max_retries: 3
   quiet_hours: ["00:00", "07:00"]
   # подпись в конце поста: знак, затем название канала ссылкой; пустой url — без подписи
@@ -119,6 +121,7 @@ scheduler:
   heartbeat_every_s: 60
   purge_every_h: 24
   daily_report_every_min: 5
+  recover_every_min: 10   # как часто искать зависшие отправки (publisher.stuck_after_min)
   misfire_grace_s: 60
   failures_before_alert: 3
 

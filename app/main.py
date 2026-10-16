@@ -78,6 +78,7 @@ from app.publisher.stage_publish import (
     ManualPublishDeps,
     PublishDeps,
     publish_due,
+    recover_stuck,
 )
 from app.reports.daily import DailyContext
 from app.reports.sender import DailyReportSender
@@ -376,6 +377,7 @@ def build_components(settings: Settings) -> list[Component]:
             heartbeat=heartbeat,
             purge_incidents=purge_incidents,
             daily_report=report_sender.send_due,
+            recover_stuck=lambda now: recover_stuck(now, publish_deps),
             sink=alerts,
         ),
         settings.scheduler,
@@ -486,6 +488,7 @@ def build_components(settings: Settings) -> list[Component]:
             settings.publisher.max_queued_per_source,
             settings.publisher.score_decay_per_h,
         ),
+        RecoverStuckComponent(publish_deps, lambda: datetime.now(UTC)),
         http,
         ClosingComponent("ai_client", deepseek.close),
         BotPollingComponent(bot, dispatcher, setup_bot_commands),
@@ -523,6 +526,32 @@ class QueueTrimComponent:
                 await trim_queue(repos, self._max_per_source, self._decay_per_h)
         except Exception:
             log.exception("queue_limit.trim_failed")
+            raise
+
+    async def stop(self) -> None:
+        """Ничего не делает."""
+
+
+class RecoverStuckComponent:
+    """Разбирает зависшие отправки при старте.
+
+    Нужен, когда приложение упало между отправкой поста в канал и записью итога:
+    такой пост остаётся в scheduled и сам из него не выйдет. Ошибка пробрасывается:
+    стартовать, не разобравшись с возможным дублем в канале, нельзя.
+    """
+
+    name = "recover_stuck"
+
+    def __init__(self, deps: PublishDeps, clock: Callable[[], datetime]) -> None:
+        self._deps = deps
+        self._clock = clock
+
+    async def start(self) -> None:
+        """Переводит зависшие посты в published или failed с publish_unknown."""
+        try:
+            await recover_stuck(self._clock(), self._deps)
+        except Exception:
+            log.exception("publish.recover_failed")
             raise
 
     async def stop(self) -> None:

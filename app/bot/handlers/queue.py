@@ -223,7 +223,9 @@ async def render_page(
         source_name = html.escape(names[news.source_id])
         score = post.relevance_score
         if tab is QueueTab.QUEUE:
-            eta_text = texts.queue_eta_text(eta.astimezone(zone), today) if eta else None
+            eta_text: str | None = texts.QUEUE_SENDING
+            if news.status is not NewsStatus.SCHEDULED:
+                eta_text = texts.queue_eta_text(eta.astimezone(zone), today) if eta else None
             used = load.get(news.source_id, 0)
             lines.append(
                 texts.queue_line(

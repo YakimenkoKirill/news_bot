@@ -288,6 +288,27 @@ def test_ui_unknown_key_rejected(configs_dir: Path) -> None:
         load_settings(configs_dir, "prod")
 
 
+def test_stuck_after_min_and_recover_interval(configs_dir: Path) -> None:
+    settings = load_settings(configs_dir)
+    assert settings.publisher.stuck_after_min == 15
+    assert settings.scheduler.recover_every_min == 10
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_non_positive_stuck_after_min_rejected(configs_dir: Path, value: int) -> None:
+    (configs_dir / "prod.yaml").write_text(
+        f"publisher:\n  stuck_after_min: {value}\n", encoding="utf-8"
+    )
+    with pytest.raises(ValidationError, match="stuck_after_min"):
+        load_settings(configs_dir, "prod")
+
+
+def test_non_positive_recover_interval_rejected(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text("scheduler:\n  recover_every_min: 0\n", encoding="utf-8")
+    with pytest.raises(ValidationError, match="recover_every_min"):
+        load_settings(configs_dir, "prod")
+
+
 def test_max_queued_per_source(configs_dir: Path) -> None:
     assert load_settings(configs_dir).publisher.max_queued_per_source == 4
 

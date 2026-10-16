@@ -25,6 +25,7 @@ EXPECTED_ORDER = [
     "database",
     "start_marker",
     "queue_trim",
+    "recover_stuck",
     "http_client",
     "ai_client",
     "bot",
@@ -59,13 +60,13 @@ async def test_build_components_order_and_wiring(settings: Settings) -> None:
     try:
         assert [c.name for c in components] == EXPECTED_ORDER
         assert isinstance(components[0], DatabaseComponent)
-        assert isinstance(components[4], ClosingComponent)
-        assert isinstance(components[5], BotPollingComponent)
-        assert isinstance(components[7], SchedulerComponent)
+        assert isinstance(components[5], ClosingComponent)
+        assert isinstance(components[6], BotPollingComponent)
+        assert isinstance(components[8], SchedulerComponent)
     finally:
+        await components[7].stop()
         await components[6].stop()
         await components[5].stop()
-        await components[4].stop()
         await components[0].stop()
 
 

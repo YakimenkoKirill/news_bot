@@ -11,8 +11,8 @@ from sqlalchemy import BigInteger, ColumnElement, Select, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import NewsItem, ProcessedPost
-from app.domain.enums import NewsStatus
+from app.db.models import NewsItem, ProcessedPost, Publication
+from app.domain.enums import NewsStatus, PublicationStatus
 from app.domain.status import ensure_transition
 
 TG_MESSAGE_ID_KEY = "msg_id"
@@ -136,6 +136,21 @@ class QueuedRef:
     news_id: int
     status: NewsStatus
     priority: float
+
+
+@dataclass(frozen=True)
+class StuckRef:
+    """Новость, застрявшая в отправке в канал.
+
+    Attributes:
+        news_id: Новость в статусе scheduled.
+        title: Заголовок новости (для сообщения администратору).
+        sent: Есть ли запись Publication(sent) — пост всё-таки ушёл в канал.
+    """
+
+    news_id: int
+    title: str
+    sent: bool
 
 
 class NewsRepository:
@@ -380,6 +395,38 @@ class NewsRepository:
             .execution_options(populate_existing=True)
         )
         return (await self._session.scalars(stmt)).one_or_none()
+
+    async def list_stuck_scheduled(self, before: datetime) -> list[StuckRef]:
+        """Новости в статусе scheduled, не менявшиеся с before, сначала самые старые.
+
+        Статус scheduled означает «отправляется»: он держится только на время
+        отправки в канал, поэтому старая строка — след упавшего приложения.
+
+        Args:
+            before: Граница: берутся новости с updated_at <= before.
+
+        Returns:
+            Ссылки на застрявшие новости с признаком «есть Publication(sent)».
+        """
+        sent = (
+            select(Publication.id)
+            .join(ProcessedPost, ProcessedPost.id == Publication.processed_post_id)
+            .where(
+                ProcessedPost.news_item_id == NewsItem.id,
+                Publication.status == PublicationStatus.SENT,
+            )
+            .exists()
+        )
+        stmt = (
+            select(NewsItem.id, NewsItem.title, sent)
+            .where(NewsItem.status == NewsStatus.SCHEDULED, NewsItem.updated_at <= before)
+            .order_by(NewsItem.updated_at, NewsItem.id)
+        )
+        rows = (await self._session.execute(stmt)).all()
+        return [
+            StuckRef(news_id=news_id, title=title, sent=bool(has_sent))
+            for news_id, title, has_sent in rows
+        ]
 
     async def update_fields(self, news_id: int, **fields: Any) -> bool:
         """Обновляет поля, заполняемые нормализацией и дедупликацией.

@@ -1,12 +1,13 @@
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 from app.config import PublisherConfig
 from app.db.models import ProcessedPost, Publication
+from app.db.repositories.news import StuckRef
 from app.domain.alerts import AlertEvent, AlertKind
 from app.domain.enums import NewsStatus, PublicationStatus
 from app.domain.status import ensure_transition
@@ -32,6 +33,7 @@ class News:
     image_url: str | None = "https://cdn.example/a.jpg"
     created_at: datetime = NOON - timedelta(hours=1)
     published_at: datetime | None = None
+    updated_at: datetime = NOON
 
 
 @dataclass
@@ -42,6 +44,7 @@ class Source:
 @dataclass
 class Db:
     news: dict[int, News] = field(default_factory=dict)
+    open_scopes: int = 0
     posts: dict[int, ProcessedPost] = field(default_factory=dict)
     publications: list[Publication] = field(default_factory=list)
     settings: dict[str, Any] = field(default_factory=dict)
@@ -74,6 +77,13 @@ class NewsRepo:
         item.status = new
         if reason:
             self.db.reasons[news_id] = reason
+
+    async def list_stuck_scheduled(self, before: datetime) -> list[StuckRef]:
+        return [
+            StuckRef(news_id=n.id, title=f"Новость {n.id}", sent=False)
+            for n in self.db.news.values()
+            if n.status is NewsStatus.SCHEDULED and n.updated_at <= before
+        ]
 
 
 class PostRepo:
@@ -121,9 +131,13 @@ class Sender:
     def __init__(self, error: Exception | None = None) -> None:
         self.error = error
         self.calls: list[tuple[FittedPost, str | None, str | None]] = []
+        self.open_scopes: list[int] = []
+        self.db: Db | None = None
 
     async def send(self, fitted: FittedPost, image_url: str | None, link: str | None = None) -> int:
         self.calls.append((fitted, image_url, link))
+        if self.db is not None:
+            self.open_scopes.append(self.db.open_scopes)
         if self.error:
             raise self.error
         return 9001
@@ -172,12 +186,17 @@ def _env(
     posts = {n.id: _post(n.id, scores.get(n.id, 0.9)) for n in news}
     db = Db(news={n.id: n for n in news}, posts=posts)
     sender = sender or Sender()
+    sender.db = db
     sink = Sink()
     checks: list[str | None] = []
 
     @asynccontextmanager
     async def scope() -> AsyncIterator[Db]:
-        yield db
+        db.open_scopes += 1
+        try:
+            yield db
+        finally:
+            db.open_scopes -= 1
 
     async def check(url: str | None) -> ImageCheck:
         checks.append(url)
@@ -254,15 +273,42 @@ async def test_equal_priority_smaller_id_first() -> None:
     assert (await publish_due(NOON, env.deps)).news_id == 1
 
 
-async def test_scheduled_competes_with_approved() -> None:
+async def test_scheduled_post_is_not_claimed_again() -> None:
+    """Пост в scheduled уже отправляется: publish_due берёт только approved."""
     news = [News(1), News(2, status=NewsStatus.SCHEDULED)]
     env = _env(news, scores={1: 0.6, 2: 0.9})
-    assert (await publish_due(NOON, env.deps)).news_id == 2
+    assert (await publish_due(NOON, env.deps)).news_id == 1
+    assert env.db.news[2].status is NewsStatus.SCHEDULED
 
 
-async def test_scheduled_post_published() -> None:
+async def test_only_scheduled_left_means_empty_queue() -> None:
     env = _env([News(1, status=NewsStatus.SCHEDULED)])
+    assert await publish_due(NOON, env.deps) == PublishReport(skipped="empty")
+    assert env.sender.calls == []
+
+
+async def test_send_happens_without_open_transaction() -> None:
+    env = _env([News(1)])
     assert (await publish_due(NOON, env.deps)).message_id == 9001
+    assert env.sender.open_scopes == [0], "во время отправки транзакция БД открыта"
+
+
+async def test_status_scheduled_while_sending() -> None:
+    """Между захватом и записью итога пост стоит в scheduled."""
+    seen: list[NewsStatus] = []
+    env = _env([News(1)])
+
+    class Watching(Sender):
+        async def send(
+            self, fitted: FittedPost, image_url: str | None, link: str | None = None
+        ) -> int:
+            seen.append(env.db.news[1].status)
+            return await super().send(fitted, image_url, link)
+
+    watching = Watching()
+    watching.db = env.db
+    assert (await publish_due(NOON, replace(env.deps, publisher=watching))).message_id == 9001
+    assert seen == [NewsStatus.SCHEDULED]
     assert env.db.news[1].status is NewsStatus.PUBLISHED
 
 
@@ -296,6 +342,7 @@ async def test_paused() -> None:
 async def test_send_error_marks_failed_and_alerts() -> None:
     env = _env([News(1)], sender=Sender(PublishError("Telegram отклонил пост: chat not found")))
     report = await publish_due(NOON, env.deps)
+    assert env.sender.open_scopes == [0]
     assert report.news_id == 1
     assert report.error is not None
     assert "chat not found" in report.error
@@ -325,8 +372,9 @@ async def test_missing_post_marks_failed() -> None:
     env = _env([News(1)])
     env.db.posts.clear()
     report = await publish_due(NOON, env.deps)
-    assert report.error == "no_processed_post"
+    assert report == PublishReport(news_id=1, error="no_processed_post")
     assert env.db.news[1].status is NewsStatus.FAILED
+    assert env.db.reasons[1] == "no_processed_post"
     assert env.sender.calls == []
 
 

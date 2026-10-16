@@ -121,6 +121,7 @@ QUEUE_PAUSED = "⏸ Пайплайн на паузе — очередь стои
 QUEUE_NOT_IN_QUEUE = "Пост уже не в очереди: {status}"
 QUEUE_DELETED = "удалён"
 QUEUE_REVIEW_WARNING = " ⚠️"
+QUEUE_SENDING = "⏳ отправляется"
 
 
 def queue_header(tab: str, count: int, page: int, pages: int) -> str:
@@ -146,7 +147,11 @@ def source_load(used: int, limit: int) -> str:
 def queue_line(
     number: int, title: str, source: str, score: float, eta: str | None, load: str = ""
 ) -> str:
-    """Строка вкладки «В очереди»; title и source уже экранированы."""
+    """Строка вкладки «В очереди»; title и source уже экранированы.
+
+    В поле eta — ожидаемое время выхода или QUEUE_SENDING для поста, который
+    уже отправляется.
+    """
     line = f"{number}. {title} — {source}{load} · ★{score:.2f}"
     return f"{line} · {eta}" if eta else line
 
@@ -196,6 +201,7 @@ RETRY_REASONS = {
     "bad_ai_response": "модель вернула некорректный ответ",
     "publish_error": "не удалось опубликовать",
     "no_processed_post": "нет пересказа",
+    "publish_unknown": "неизвестно, вышел ли пост: проверьте канал",
 }
 RETRY_HINT_TO_AI = "«Повторить» отправит новость в модель заново."
 RETRY_HINT_TO_QUEUE = "«Повторить» вернёт пост в очередь публикации."

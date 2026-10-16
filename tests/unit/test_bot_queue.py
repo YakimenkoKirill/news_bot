@@ -260,6 +260,17 @@ async def test_order_matches_publish_selection() -> None:
     assert expected == [4, 2, 1, 3]
 
 
+async def test_sending_post_marked_instead_of_eta() -> None:
+    """Пост в scheduled уже отправляется: вместо прогноза — «⏳ отправляется»."""
+    db = Db()
+    db.add(1, 0.9, status=S.SCHEDULED)
+    db.add(2, 0.5)
+    text, _ = await render_page(_deps(db), QueueTab.QUEUE, 0, NOW)
+    lines = _items(text)
+    assert lines[0] == f"1. Заголовок 1 — Пример · ★0.90 · {texts.QUEUE_SENDING}"
+    assert lines[1] == f"2. Заголовок 2 — Пример · ★0.50 · {_eta(NOW + INTERVAL)}"
+
+
 async def test_line_has_score_source_and_eta() -> None:
     db = Db()
     db.add(1, 0.876)
