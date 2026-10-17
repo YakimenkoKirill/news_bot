@@ -29,6 +29,7 @@ from app.publisher.limits import FittedPost, fit_post
 from app.publisher.media import ImageCheck, PhotoFetcher
 from app.publisher.publisher import PublishError
 from app.publisher.slots import next_slot
+from app.runtime_config import RuntimeSource
 
 log = structlog.get_logger(__name__)
 
@@ -209,6 +210,7 @@ class PublishDeps:
         news_repo, post_repo, source_repo, publication_repo, settings_repo: Репозитории.
         check_image: Проверка картинки по URL (check_image с HTTP-клиентом).
         photo_fetcher: Загрузка фото из Telegram-источника; None — только по URL.
+        runtime: Изменяемые на лету параметры публикации; None — только cfg из yaml.
         publisher: Отправка в канал.
         sink: Получатель алертов.
         cfg: Секция publisher.
@@ -229,6 +231,7 @@ class PublishDeps:
     channel_id: int
     tz: str | ZoneInfo
     photo_fetcher: PhotoFetcher | None = None
+    runtime: RuntimeSource | None = None
 
 
 @dataclass(frozen=True)
@@ -267,17 +270,18 @@ async def publish_due(now: datetime, deps: PublishDeps) -> PublishReport:
     Returns:
         Отчёт о вызове.
     """
+    cfg = await publisher_config(deps)
     async with deps.session_scope() as session:
         if await deps.settings_repo(session).get(PAUSED_SETTING, False):
             return PublishReport(skipped="paused")
         publications = deps.publication_repo(session)
         last = await publications.last_published_at(deps.channel_id)
-        slot = next_slot(now, last, deps.cfg.min_interval_min, deps.cfg.quiet_window, deps.tz)
+        slot = next_slot(now, last, cfg.min_interval_min, cfg.quiet_window, deps.tz)
         if slot > now:
             return PublishReport(skipped="slot", next_slot=slot)
 
         item = await deps.news_repo(session).claim_next(
-            PUBLISHABLE_STATUSES, Priority.from_config(deps.cfg)
+            PUBLISHABLE_STATUSES, Priority.from_config(cfg)
         )
         if item is None:
             return PublishReport(skipped="empty")
@@ -289,6 +293,20 @@ async def publish_due(now: datetime, deps: PublishDeps) -> PublishReport:
         return PublishReport(news_id=news_id, error=REASON_NO_POST)
     with bind_context(news_id=news_id):
         return await _send_claimed(claimed, now, deps)
+
+
+async def publisher_config(deps: PublishDeps) -> PublisherConfig:
+    """Параметры публикации: снимок изменяемых значений или cfg из yaml.
+
+    Args:
+        deps: Зависимости стадии публикации.
+
+    Returns:
+        Секция publisher, по которой считать слот, приоритет и лимиты.
+    """
+    if deps.runtime is None:
+        return deps.cfg
+    return (await deps.runtime.snapshot()).publisher
 
 
 async def _claim_for_send(
@@ -453,7 +471,8 @@ async def recover_stuck(now: datetime, deps: PublishDeps) -> int:
     Returns:
         Сколько новостей разобрано.
     """
-    border = now - timedelta(minutes=deps.cfg.stuck_after_min)
+    cfg = await publisher_config(deps)
+    border = now - timedelta(minutes=cfg.stuck_after_min)
     async with deps.session_scope() as session:
         stuck = list(await deps.news_repo(session).list_stuck_scheduled(border))
     recovered = 0

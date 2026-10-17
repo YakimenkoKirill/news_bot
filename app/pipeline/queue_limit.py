@@ -16,6 +16,7 @@ import structlog
 
 from app.db.repositories.news import Priority, QueuedRef
 from app.domain.enums import NewsStatus
+from app.runtime_config import RuntimeSource
 
 log = structlog.get_logger(__name__)
 
@@ -213,12 +214,14 @@ class QueueAdmission:
         news_repo, source_repo: Фабрики репозиториев от сессии.
         max_per_source: Постов источника в очереди (publisher.max_queued_per_source).
         priority: Параметры приоритета очереди (секция publisher).
+        runtime: Изменяемые на лету параметры; None — значения из yaml.
     """
 
     news_repo: Callable[[Any], LimitNewsRepo]
     source_repo: Callable[[Any], LimitSourceRepo]
     max_per_source: int
     priority: Priority
+    runtime: RuntimeSource | None = None
 
     async def admit(
         self,
@@ -231,12 +234,24 @@ class QueueAdmission:
     ) -> AdmitResult:
         """Ставит пост в очередь в уже открытой транзакции."""
         repos = QueueLimitRepos(news=self.news_repo(session), sources=self.source_repo(session))
+        max_per_source, priority = await self.limits()
         return await admit_to_queue(
             news_id,
             source_id,
             expected,
             repos,
-            self.max_per_source,
-            self.priority,
+            max_per_source,
+            priority,
             forced=forced,
         )
+
+    async def limits(self) -> tuple[int, Priority]:
+        """Лимит источника и параметры приоритета на этот момент.
+
+        Returns:
+            Значения из снимка изменяемых параметров или из yaml.
+        """
+        if self.runtime is None:
+            return self.max_per_source, self.priority
+        publisher = (await self.runtime.snapshot()).publisher
+        return publisher.max_queued_per_source, Priority.from_config(publisher)

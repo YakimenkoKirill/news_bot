@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import signal
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -85,6 +85,7 @@ from app.publisher.stage_publish import (
 from app.reports.daily import DailyContext
 from app.reports.sender import DailyReportSender
 from app.reports.service import ReportDeps
+from app.runtime_config import QUEUE_LIMIT_KEY, RuntimeConfig
 from app.scheduler import SchedulerDeps, build_scheduler
 from app.stats import StatsDeps, collect_post_stats
 
@@ -185,6 +186,16 @@ def build_components(settings: Settings) -> list[Component]:
     def scope() -> AbstractAsyncContextManager[AsyncSession]:
         return session_scope(factory)
 
+    trim_on_change: list[Callable[[], Awaitable[int]]] = []
+
+    async def on_runtime_change(key: str) -> None:
+        """После изменения лимита источника лишние посты вытесняются сразу."""
+        if key != QUEUE_LIMIT_KEY:
+            return
+        for trim in trim_on_change:
+            await trim()
+
+    runtime = RuntimeConfig(scope, SettingsRepository, settings, on_change=on_runtime_change)
     http = HttpClient(settings.collectors)
     robots = RobotsChecker(
         http, settings.collectors.user_agent, timedelta(hours=settings.collectors.robots_ttl_h)
@@ -276,7 +287,9 @@ def build_components(settings: Settings) -> list[Component]:
     budget = BudgetGuard(_SessionCost(scope), alerts, settings.ai, tz)
 
     def processor(repos: AiRepos) -> AiProcessor:
-        return AiProcessor(deepseek, settings.channel, repos, settings.ai, budget=budget)
+        return AiProcessor(
+            deepseek, settings.channel, repos, settings.ai, budget=budget, runtime=runtime
+        )
 
     collection_deps = CollectionDeps(
         session_scope=scope,
@@ -301,6 +314,7 @@ def build_components(settings: Settings) -> list[Component]:
         source_repo=SourceRepository,
         max_per_source=settings.publisher.max_queued_per_source,
         priority=Priority.from_config(settings.publisher),
+        runtime=runtime,
     )
     ai_deps = AiStageDeps(
         session_scope=scope,
@@ -331,6 +345,7 @@ def build_components(settings: Settings) -> list[Component]:
         channel_id=settings.telegram_channel_id,
         tz=tz,
         photo_fetcher=photo_fetcher,
+        runtime=runtime,
     )
     manual_deps = ManualPublishDeps(publish=publish_deps, news_repo=NewsRepository)
     stats_deps = StatsDeps(
@@ -464,6 +479,7 @@ def build_components(settings: Settings) -> list[Component]:
                     daily_budget=settings.ai.daily_budget,
                     channel_id=settings.telegram_channel_id,
                     tz=tz,
+                    runtime=runtime,
                 ),
                 "sources_deps": SourcesDeps(
                     session_scope=scope,
@@ -509,6 +525,7 @@ def build_components(settings: Settings) -> list[Component]:
                     max_per_source=settings.publisher.max_queued_per_source,
                     clock=lambda: datetime.now(UTC),
                     manual=manual_deps,
+                    runtime=runtime,
                 ),
                 "errors_deps": ErrorsDeps(
                     session_scope=scope,
@@ -533,14 +550,12 @@ def build_components(settings: Settings) -> list[Component]:
             },
         )
     )
+    queue_trim = QueueTrimComponent(scope, admission)
+    trim_on_change.append(queue_trim.trim)
     return [
         DatabaseComponent(engine),
         StartMarkerComponent(scope, started_at),
-        QueueTrimComponent(
-            scope,
-            settings.publisher.max_queued_per_source,
-            Priority.from_config(settings.publisher),
-        ),
+        queue_trim,
         RecoverStuckComponent(publish_deps, lambda: datetime.now(UTC)),
         http,
         ClosingComponent("ai_client", deepseek.close),
@@ -554,7 +569,9 @@ class QueueTrimComponent:
     """Приводит очередь к лимиту источника при старте.
 
     Нужен, когда лимит включили или уменьшили, пока приложение не работало.
-    Ошибка пробрасывается: стартовать с неизвестным состоянием очереди нельзя.
+    Лимит берётся там же, где его берёт постановка в очередь, поэтому правка
+    через /settings учитывается. Ошибка пробрасывается: стартовать с неизвестным
+    состоянием очереди нельзя.
     """
 
     name = "queue_trim"
@@ -562,24 +579,25 @@ class QueueTrimComponent:
     def __init__(
         self,
         scope: Callable[[], AbstractAsyncContextManager[AsyncSession]],
-        max_per_source: int,
-        priority: Priority,
+        admission: QueueAdmission,
     ) -> None:
         self._scope = scope
-        self._max_per_source = max_per_source
-        self._priority = priority
+        self._admission = admission
 
     async def start(self) -> None:
         """Вытесняет лишние посты каждого источника одной транзакцией."""
         try:
-            async with self._scope() as session:
-                repos = QueueLimitRepos(
-                    news=NewsRepository(session), sources=SourceRepository(session)
-                )
-                await trim_queue(repos, self._max_per_source, self._priority)
+            await self.trim()
         except Exception:
             log.exception("queue_limit.trim_failed")
             raise
+
+    async def trim(self) -> int:
+        """Вытесняет лишние посты и возвращает их число."""
+        max_per_source, priority = await self._admission.limits()
+        async with self._scope() as session:
+            repos = QueueLimitRepos(news=NewsRepository(session), sources=SourceRepository(session))
+            return await trim_queue(repos, max_per_source, priority)
 
     async def stop(self) -> None:
         """Ничего не делает."""

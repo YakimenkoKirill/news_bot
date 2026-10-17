@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 import structlog
 
-from app.config import AiConfig, ChannelProfile
+from app.config import AiConfig, ChannelProfile, PublisherConfig
 from app.db.models import AiRequest, ProcessedPost
 from app.domain.enums import ModerationMode, NewsStatus
 from app.domain.status import ensure_transition
@@ -22,6 +22,7 @@ from app.pipeline.ai.client import (
 from app.pipeline.ai.processor import AiProcessor, AiRepos
 from app.pipeline.ai.prompts import LEGACY_PROMPT_VERSION, PROMPT_VERSION
 from app.pipeline.queue_limit import AdmitOutcome, AdmitResult
+from app.runtime_config import RuntimeSnapshot
 from tests.config_helpers import base_section
 
 CFG = AiConfig(**{**base_section("ai"), "min_score": 0.5})
@@ -419,6 +420,45 @@ async def test_second_bad_response_fails() -> None:
     assert news.history == [NewsStatus.FAILED]
     assert posts.posts == []
     assert len(client.calls) == 2
+
+
+class FakeRuntime:
+    """Снимок изменяемых параметров: тема канала и порог оценки."""
+
+    def __init__(self, profile: ChannelProfile, cfg: AiConfig) -> None:
+        self.value = RuntimeSnapshot(
+            channel=profile, ai=cfg, publisher=PublisherConfig(**base_section("publisher"))
+        )
+        self.calls = 0
+
+    async def snapshot(self) -> RuntimeSnapshot:
+        self.calls += 1
+        return self.value
+
+
+async def test_runtime_topic_and_min_score_applied() -> None:
+    """Тема канала и порог берутся из снимка, а не из cfg с момента старта."""
+    news_repo, post_repo = FakeNewsRepo(), FakePostRepo()
+    profile = PROFILE.model_copy(update={"topic": "спорт"})
+    cfg = CFG.model_copy(update={"min_score": 0.95})
+    runtime = FakeRuntime(profile, cfg)
+    client = FakeClient([_screen(score=0.9), _summary()])
+    processor = AiProcessor(client, PROFILE, _repos(news_repo, post_repo), CFG, runtime=runtime)
+
+    status = await processor.process(News(), Source())
+
+    assert status is NewsStatus.FILTERED, "порог 0.95 из снимка отсеял оценку 0.9"
+    assert news_repo.reason == "not_relevant"
+    assert "спорт" in client.calls[0][0]["content"], "тема канала из снимка попала в промпт"
+    assert runtime.calls == 1
+
+
+async def test_without_runtime_static_config_used() -> None:
+    news_repo, post_repo = FakeNewsRepo(), FakePostRepo()
+    client = FakeClient([_screen(score=0.9), _summary()])
+    processor = AiProcessor(client, PROFILE, _repos(news_repo, post_repo), CFG)
+    assert await processor.process(News(), Source()) is NewsStatus.APPROVED
+    assert PROFILE.topic in client.calls[0][0]["content"]
 
 
 async def _run_foreign(

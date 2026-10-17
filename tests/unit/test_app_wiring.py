@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -20,7 +21,10 @@ from app.config import CONFIGS_DIR, Settings, load_settings
 from app.db.repositories.news import Priority
 from app.domain.alerts import AlertEvent
 from app.main import Application, Component, build_components
+from app.pipeline.queue_limit import QueueAdmission
 from app.scheduler import JobRunner
+
+PRIORITY = Priority(decay_per_h=0.02, cluster_bonus=0.05, cluster_bonus_max=3)
 
 EXPECTED_ORDER = [
     "database",
@@ -257,17 +261,20 @@ async def test_queue_trim_component_trims_on_start(monkeypatch: pytest.MonkeyPat
         calls.append((max_per_source, priority))
         return 2
 
+    admission = QueueAdmission(
+        news_repo=MagicMock(), source_repo=MagicMock(), max_per_source=4, priority=PRIORITY
+    )
+
     monkeypatch.setattr(main_module, "trim_queue", fake_trim)
 
     @asynccontextmanager
     async def scope() -> AsyncIterator[Any]:
         yield object()
 
-    priority = Priority(decay_per_h=0.02, cluster_bonus=0.05, cluster_bonus_max=3)
-    component = main_module.QueueTrimComponent(scope, 4, priority)
+    component = main_module.QueueTrimComponent(scope, admission)
     await component.start()
     await component.stop()
-    assert calls == [(4, priority)]
+    assert calls == [(4, PRIORITY)]
 
 
 async def test_queue_trim_failure_is_raised(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -281,4 +288,7 @@ async def test_queue_trim_failure_is_raised(monkeypatch: pytest.MonkeyPatch) -> 
         yield object()
 
     with pytest.raises(RuntimeError):
-        await main_module.QueueTrimComponent(scope, 4, Priority(0.02)).start()
+        admission = QueueAdmission(
+            news_repo=MagicMock(), source_repo=MagicMock(), max_per_source=4, priority=PRIORITY
+        )
+        await main_module.QueueTrimComponent(scope, admission).start()

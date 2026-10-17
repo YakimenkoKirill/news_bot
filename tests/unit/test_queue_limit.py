@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import pytest
 import structlog
 
+from app.config import AiConfig, ChannelProfile, PublisherConfig
 from app.db.repositories.news import Priority, QueuedRef
 from app.domain.enums import NewsStatus
 from app.domain.status import InvalidTransition, ensure_transition
@@ -12,10 +13,13 @@ from app.pipeline.queue_limit import (
     REASON_QUEUE_LIMIT,
     AdmitOutcome,
     AdmitResult,
+    QueueAdmission,
     QueueLimitRepos,
     admit_to_queue,
     trim_queue,
 )
+from app.runtime_config import RuntimeSnapshot
+from tests.config_helpers import base_section
 
 S = NewsStatus
 SOURCE = 1
@@ -311,3 +315,62 @@ async def test_trim_with_zero_limit_does_nothing() -> None:
         db.add(index, 0.5)
     assert await trim_queue(_repos(db), 0, PRIORITY) == 0
     assert len(_queue(db)) == 4
+
+
+class FakeRuntime:
+    """Снимок изменяемых параметров: лимит источника и старение оценки."""
+
+    def __init__(self, cfg: PublisherConfig) -> None:
+        self.value = RuntimeSnapshot(
+            channel=ChannelProfile(**base_section("channel")),
+            ai=AiConfig(**base_section("ai")),
+            publisher=cfg,
+        )
+
+    async def snapshot(self) -> RuntimeSnapshot:
+        return self.value
+
+
+def _admission(runtime: FakeRuntime | None = None) -> QueueAdmission:
+    return QueueAdmission(
+        news_repo=NewsRepo,
+        source_repo=SourceRepo,
+        max_per_source=4,
+        priority=PRIORITY,
+        runtime=runtime,
+    )
+
+
+async def test_limits_from_yaml_without_runtime() -> None:
+    assert await _admission().limits() == (4, PRIORITY)
+
+
+async def test_limits_from_runtime_snapshot() -> None:
+    """Правка лимита и старения применяется без перезапуска."""
+    cfg = PublisherConfig(
+        **{**base_section("publisher"), "max_queued_per_source": 1, "score_decay_per_h": 0}
+    )
+    max_per_source, priority = await _admission(FakeRuntime(cfg)).limits()
+    assert max_per_source == 1
+    assert priority == Priority.from_config(cfg)
+
+
+async def test_admit_uses_runtime_limit() -> None:
+    """С лимитом 1 второй пост источника вытесняет слабейшего."""
+    cfg = PublisherConfig(**{**base_section("publisher"), "max_queued_per_source": 1})
+    db = Db()
+    strong = db.add(1, priority=0.9, status=S.APPROVED)
+    fresh = db.add(2, priority=0.95, status=S.PROCESSED)
+
+    admission = QueueAdmission(
+        news_repo=NewsRepo,
+        source_repo=SourceRepo,
+        max_per_source=99,
+        priority=PRIORITY,
+        runtime=FakeRuntime(cfg),
+    )
+    result = await admission.admit(db, fresh, SOURCE, S.PROCESSED)
+
+    assert result.outcome is AdmitOutcome.ADMITTED_DISPLACED
+    assert db.items[strong].status is S.FILTERED
+    assert db.items[fresh].status is S.APPROVED

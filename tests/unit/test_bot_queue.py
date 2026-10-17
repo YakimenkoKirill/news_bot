@@ -17,12 +17,13 @@ from app.bot.handlers.queue import QueueDeps, render_page
 from app.bot.keyboards import QueueAction, QueueActionType, QueueTab, queue_item_keyboard
 from app.bot.moderation import REVIEW_NOTE_PREFIX
 from app.bot.preview import PreviewDeps
-from app.config import PublisherConfig, Settings
+from app.config import AiConfig, ChannelProfile, PublisherConfig, Settings
 from app.db.models import NewsItem, ProcessedPost, Source
 from app.db.repositories.news import Priority
 from app.domain.enums import NewsStatus, SourceType
 from app.publisher.media import ImageCheck
 from app.publisher.stage_publish import ManualPublishDeps
+from app.runtime_config import RuntimeSnapshot
 from tests.bot_helpers import FakeSession, callback_update, make_bot, message_update
 from tests.config_helpers import base_section, bot_config
 
@@ -297,6 +298,40 @@ async def test_cluster_mark_hidden_for_single_source() -> None:
     db.add(1, 0.9, cluster_sources=1)
     text, _ = await render_page(_deps(db), QueueTab.QUEUE, 0, NOW)
     assert "🔁" not in text
+
+
+class FakeRuntime:
+    """Снимок изменяемых параметров публикации для /queue."""
+
+    def __init__(self, cfg: PublisherConfig) -> None:
+        self.value = RuntimeSnapshot(
+            channel=ChannelProfile(**base_section("channel")),
+            ai=AiConfig(**base_section("ai")),
+            publisher=cfg,
+        )
+
+    async def snapshot(self) -> RuntimeSnapshot:
+        return self.value
+
+
+async def test_eta_follows_runtime_interval() -> None:
+    """Интервал изменили через настройки — прогноз в /queue считается по нему."""
+    db = _db_with(2)
+    cfg = CFG.model_copy(update={"min_interval_min": 120})
+    text, _ = await render_page(
+        replace(_deps(db), runtime=FakeRuntime(cfg)), QueueTab.QUEUE, 0, NOW
+    )
+    lines = _items(text)
+    assert lines[1].endswith(_eta(NOW + timedelta(minutes=120)))
+
+
+async def test_source_load_follows_runtime_limit() -> None:
+    db = _db_with(2)
+    cfg = CFG.model_copy(update={"max_queued_per_source": 2})
+    text, _ = await render_page(
+        replace(_deps(db), runtime=FakeRuntime(cfg)), QueueTab.QUEUE, 0, NOW
+    )
+    assert "🔒2/2" in text
 
 
 async def test_line_has_score_source_and_eta() -> None:

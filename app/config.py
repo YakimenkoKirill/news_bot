@@ -324,6 +324,14 @@ class DailyReportConfig(BaseModel):
         return datetime.strptime(self.send_at, QUIET_HOURS_FORMAT).time()
 
 
+class RuntimeOptions(BaseModel):
+    """Секция runtime: параметры, изменяемые без перезапуска (app/runtime_config.py)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    cache_s: float = Field(gt=0)
+
+
 class StatsConfig(BaseModel):
     """Секция stats: сбор статистики опубликованных постов."""
 
@@ -461,6 +469,7 @@ class Settings(BaseSettings):
     moderation: ModerationConfig
     alerts: AlertsConfig
     scheduler: SchedulerConfig
+    runtime: RuntimeOptions
     stats: StatsConfig
     retention: RetentionConfig
     daily_report: DailyReportConfig

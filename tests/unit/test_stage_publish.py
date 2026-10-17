@@ -7,7 +7,7 @@ from typing import Any
 
 import structlog.testing
 
-from app.config import PublisherConfig
+from app.config import AiConfig, ChannelProfile, PublisherConfig
 from app.db.models import ProcessedPost, Publication
 from app.db.repositories.news import Priority, StuckRef
 from app.domain.alerts import AlertEvent, AlertKind
@@ -16,7 +16,13 @@ from app.domain.status import ensure_transition
 from app.publisher.limits import FittedPost
 from app.publisher.media import ImageCheck
 from app.publisher.publisher import PublishError
-from app.publisher.stage_publish import PublishDeps, PublishReport, publish_due
+from app.publisher.stage_publish import (
+    PublishDeps,
+    PublishReport,
+    publish_due,
+    recover_stuck,
+)
+from app.runtime_config import RuntimeSnapshot
 from tests.config_helpers import base_section
 
 CFG = PublisherConfig(**{**base_section("publisher"), "quiet_hours": ["23:00", "07:00"]})
@@ -319,6 +325,58 @@ async def test_status_scheduled_while_sending() -> None:
     assert (await publish_due(NOON, replace(env.deps, publisher=watching))).message_id == 9001
     assert seen == [NewsStatus.SCHEDULED]
     assert env.db.news[1].status is NewsStatus.PUBLISHED
+
+
+class FakeRuntime:
+    """Снимок изменяемых параметров публикации."""
+
+    def __init__(self, cfg: PublisherConfig) -> None:
+        self.value = RuntimeSnapshot(
+            channel=ChannelProfile(**base_section("channel")),
+            ai=AiConfig(**base_section("ai")),
+            publisher=cfg,
+        )
+        self.calls = 0
+
+    async def snapshot(self) -> RuntimeSnapshot:
+        self.calls += 1
+        return self.value
+
+
+async def test_runtime_interval_applied_without_restart() -> None:
+    """Интервал из снимка важнее значения из yaml и действует сразу."""
+    env = _env([News(1), News(2)])
+    runtime = FakeRuntime(CFG.model_copy(update={"min_interval_min": 120}))
+    deps = replace(env.deps, runtime=runtime)
+
+    await publish_due(NOON, deps)
+    later = await publish_due(NOON + timedelta(minutes=CFG.min_interval_min), deps)
+
+    assert later.skipped == "slot"
+    assert later.next_slot == NOON + timedelta(minutes=120)
+    assert runtime.calls >= 2, "снимок берётся на каждом запуске"
+
+
+async def test_runtime_quiet_hours_applied() -> None:
+    env = _env([News(1)])
+    runtime = FakeRuntime(CFG.model_copy(update={"quiet_hours": ["11:00", "13:00"]}))
+    report = await publish_due(NOON, replace(env.deps, runtime=runtime))
+    assert report.skipped == "slot"
+    assert env.sender.calls == []
+
+
+async def test_runtime_decay_changes_order() -> None:
+    news = [News(1, published_at=NOON - timedelta(hours=12)), News(2, published_at=NOON)]
+    env = _env(news, scores={1: 0.8, 2: 0.6}, cfg=_cfg(0))
+    runtime = FakeRuntime(CFG.model_copy(update={"score_decay_per_h": 0.02}))
+    assert (await publish_due(NOON, replace(env.deps, runtime=runtime))).news_id == 2
+
+
+async def test_runtime_stuck_threshold_applied() -> None:
+    env = _env([News(1, status=NewsStatus.SCHEDULED, updated_at=NOON - timedelta(minutes=20))])
+    runtime = FakeRuntime(CFG.model_copy(update={"stuck_after_min": 60}))
+    assert await recover_stuck(NOON, replace(env.deps, runtime=runtime)) == 0
+    assert await recover_stuck(NOON, env.deps) == 1
 
 
 async def test_slot_in_future_by_interval() -> None:

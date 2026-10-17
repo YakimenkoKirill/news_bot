@@ -41,6 +41,7 @@ from app.publisher.stage_publish import (
     ManualPublishResult,
     publish_now,
 )
+from app.runtime_config import RuntimeSource
 
 log = structlog.get_logger(__name__)
 
@@ -133,6 +134,7 @@ class QueueDeps:
         max_per_source: Лимит постов источника в очереди; 0 — без лимита.
         clock: Текущее время.
         manual: Зависимости публикации вне очереди (publish_now).
+        runtime: Изменяемые на лету параметры; None — значения из yaml.
     """
 
     session_scope: Callable[[], AbstractAsyncContextManager[Any]]
@@ -150,6 +152,7 @@ class QueueDeps:
     max_per_source: int
     clock: Callable[[], datetime]
     manual: ManualPublishDeps
+    runtime: RuntimeSource | None = None
 
 
 def _zone(tz: str | ZoneInfo) -> ZoneInfo:
@@ -175,7 +178,8 @@ async def render_page(
         HTML-текст и клавиатура.
     """
     statuses = QUEUE_TAB_STATUSES[tab]
-    cfg = deps.publisher_cfg
+    cfg = deps.publisher_cfg if deps.runtime is None else (await deps.runtime.snapshot()).publisher
+    max_per_source = cfg.max_queued_per_source if deps.runtime is not None else deps.max_per_source
     async with deps.session_scope() as session:
         news_repo = deps.news_repo(session)
         total = await news_repo.count_prepared(statuses)
@@ -200,7 +204,7 @@ async def render_page(
         last = await deps.publication_repo(session).last_published_at(deps.channel_id)
         load = (
             await news_repo.queue_counts_by_source(QUEUE_TAB_STATUSES[QueueTab.QUEUE])
-            if deps.max_per_source
+            if max_per_source
             else {}
         )
 
@@ -237,7 +241,7 @@ async def render_page(
                     source_name,
                     score,
                     eta_text,
-                    texts.source_load(used, deps.max_per_source),
+                    texts.source_load(used, max_per_source),
                     texts.cluster_mark(news.cluster_sources or 1),
                 )
             )

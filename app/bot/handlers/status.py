@@ -18,6 +18,7 @@ from aiogram.filters import Command
 from app.bot import texts
 from app.domain.enums import NewsStatus
 from app.pipeline.queue_limit import QUEUE_STATUSES
+from app.runtime_config import RuntimeSource
 
 log = structlog.get_logger(__name__)
 
@@ -100,6 +101,7 @@ class StatusDeps:
     channel_id: int
     tz: ZoneInfo
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
+    runtime: RuntimeSource | None = None
 
 
 def _money(value: Decimal) -> str:
@@ -138,9 +140,16 @@ async def build_status(deps: StatusDeps) -> str:
     )
 
 
+async def _limit(deps: StatusDeps) -> int:
+    """Лимит источника в очереди: снимок изменяемых параметров или yaml."""
+    if deps.runtime is None:
+        return deps.max_queued_per_source
+    return (await deps.runtime.snapshot()).publisher.max_queued_per_source
+
+
 async def _full_sources(session: Any, deps: StatusDeps) -> str:
     """Источники, у которых очередь заполнена до лимита, строкой «Имя 4/4»."""
-    limit = deps.max_queued_per_source
+    limit = await _limit(deps)
     if limit <= 0:
         return ""
     counts = await deps.news_repo(session).queue_counts_by_source(QUEUE_STATUSES)

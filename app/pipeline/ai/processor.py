@@ -32,6 +32,7 @@ from app.pipeline.ai.schema import (
     parse_summary_response,
 )
 from app.pipeline.queue_limit import AdmitOutcome, AdmitResult
+from app.runtime_config import RuntimeSource
 
 log = structlog.get_logger(__name__)
 
@@ -156,6 +157,7 @@ class AiProcessor:
         *,
         budget: BudgetCheck | None = None,
         clock: Callable[[], datetime] | None = None,
+        runtime: RuntimeSource | None = None,
     ) -> None:
         self._client = client
         self._profile = profile
@@ -163,6 +165,7 @@ class AiProcessor:
         self._cfg = cfg
         self._budget = budget
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._runtime = runtime
 
     async def process(self, news: ProcessableNews, source: ModeratedSource) -> NewsStatus:
         """Обрабатывает новость в статусе normalized.
@@ -187,6 +190,7 @@ class AiProcessor:
             BudgetExceeded: Бюджет исчерпан между отбором и пересказом; новость
                 остаётся normalized, запрос отбора сохранён.
         """
+        await self._refresh()
         totals = _Totals()
         if not self._cfg.two_stage:
             return await self._process_single(news, source, totals)
@@ -217,6 +221,14 @@ class AiProcessor:
         if summary is None:
             return await self._fail(news.id, totals)
         return await self._store(news, source, summary, screen.score, PROMPT_VERSION, totals)
+
+    async def _refresh(self) -> None:
+        """Берёт свежие тему канала и порог оценки, если параметры меняются на лету."""
+        if self._runtime is None:
+            return
+        snapshot = await self._runtime.snapshot()
+        self._profile = snapshot.channel
+        self._cfg = snapshot.ai
 
     async def _process_single(
         self, news: ProcessableNews, source: ModeratedSource, totals: _Totals
