@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.base import session_scope
 from app.db.models import NewsItem, ProcessedPost, Source
-from app.db.repositories.news import NewsRepository
+from app.db.repositories.news import NewsRepository, Priority
 from app.db.repositories.sources import SourceRepository
 from app.domain.enums import NewsStatus, SourceType
 
@@ -18,6 +18,7 @@ S = NewsStatus
 NOW = datetime(2026, 10, 16, 12, 0, tzinfo=UTC)
 QUEUE = [S.APPROVED, S.SCHEDULED]
 DECAY = 0.02
+PRIORITY = Priority(DECAY)
 LOCK_TIMEOUT = 0.3
 
 
@@ -142,10 +143,10 @@ async def test_queued_by_source_weakest_first(
     middle = await fixture.news(source_id, 0.5)
 
     repo = NewsRepository(session)
-    queued = await repo.queued_by_source(source_id, QUEUE, DECAY)
+    queued = await repo.queued_by_source(source_id, QUEUE, PRIORITY)
     assert [item.news_id for item in queued] == [weak, middle, strong]
 
-    prepared = await repo.list_prepared(QUEUE, DECAY, limit=10, offset=0)
+    prepared = await repo.list_prepared(QUEUE, PRIORITY, limit=10, offset=0)
     assert [news.id for news, _ in prepared] == [strong, middle, weak], "порядок обратный"
 
 
@@ -158,11 +159,10 @@ async def test_queued_by_source_matches_priority_of(
     old = await fixture.news(source_id, 0.8, published_at=NOW - timedelta(hours=12))
 
     repo = NewsRepository(session)
-    queued = {
-        item.news_id: item.priority for item in await repo.queued_by_source(source_id, QUEUE, DECAY)
-    }
-    assert queued[fresh] == await repo.priority_of(fresh, DECAY)
-    assert queued[old] == await repo.priority_of(old, DECAY)
+    rows = await repo.queued_by_source(source_id, QUEUE, PRIORITY)
+    queued = {item.news_id: item.priority for item in rows}
+    assert queued[fresh] == await repo.priority_of(fresh, PRIORITY)
+    assert queued[old] == await repo.priority_of(old, PRIORITY)
     assert queued[fresh] > queued[old], "свежая новость сильнее с поправкой на возраст"
 
 
@@ -174,7 +174,7 @@ async def test_equal_priority_bigger_id_is_weaker(
     first = await fixture.news(source_id, 0.5)
     second = await fixture.news(source_id, 0.5)
 
-    queued = await NewsRepository(session).queued_by_source(source_id, QUEUE, DECAY)
+    queued = await NewsRepository(session).queued_by_source(source_id, QUEUE, PRIORITY)
     assert [item.news_id for item in queued] == [second, first]
 
 
@@ -190,13 +190,13 @@ async def test_queued_by_source_filters_statuses_and_sources(
     await fixture.news(source_id, None, status=S.APPROVED)
     await fixture.news(other_id, 0.9, status=S.APPROVED)
 
-    queued = await NewsRepository(session).queued_by_source(source_id, QUEUE, DECAY)
+    queued = await NewsRepository(session).queued_by_source(source_id, QUEUE, PRIORITY)
     assert {item.news_id for item in queued} == {approved, scheduled}
     assert {item.status for item in queued} == {S.APPROVED, S.SCHEDULED}
 
 
 async def test_queued_by_source_empty(session: AsyncSession) -> None:
-    assert await NewsRepository(session).queued_by_source(999, QUEUE, DECAY) == []
+    assert await NewsRepository(session).queued_by_source(999, QUEUE, PRIORITY) == []
 
 
 async def test_priority_of_without_post_or_news(
@@ -207,8 +207,8 @@ async def test_priority_of_without_post_or_news(
     without_post = await fixture.news(source_id, None)
 
     repo = NewsRepository(session)
-    assert await repo.priority_of(without_post, DECAY) is None
-    assert await repo.priority_of(10_000, DECAY) is None
+    assert await repo.priority_of(without_post, PRIORITY) is None
+    assert await repo.priority_of(10_000, PRIORITY) is None
 
 
 async def test_queue_counts_by_source(
@@ -231,14 +231,14 @@ async def test_queue_counts_by_source(
 async def test_negative_decay_rejected(session: AsyncSession, decay: float) -> None:
     repo = NewsRepository(session)
     with pytest.raises(ValueError):
-        await repo.queued_by_source(1, QUEUE, decay)
+        await repo.queued_by_source(1, QUEUE, Priority(decay))
     with pytest.raises(ValueError):
-        await repo.priority_of(1, decay)
+        await repo.priority_of(1, Priority(decay))
 
 
 async def test_empty_statuses_rejected(session: AsyncSession) -> None:
     repo = NewsRepository(session)
     with pytest.raises(ValueError):
-        await repo.queued_by_source(1, [], DECAY)
+        await repo.queued_by_source(1, [], PRIORITY)
     with pytest.raises(ValueError):
         await repo.queue_counts_by_source([])

@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 import pytest
 import structlog
 
-from app.db.repositories.news import QueuedRef
+from app.db.repositories.news import Priority, QueuedRef
 from app.domain.enums import NewsStatus
 from app.domain.status import InvalidTransition, ensure_transition
 from app.pipeline.queue_limit import (
@@ -22,6 +22,7 @@ SOURCE = 1
 OTHER_SOURCE = 2
 NEWS = 100
 DECAY = 0.02
+PRIORITY = Priority(DECAY)
 MAX = 3
 
 
@@ -65,7 +66,7 @@ class NewsRepo:
             self.db.reasons[news_id] = reason
 
     async def queued_by_source(
-        self, source_id: int, statuses: Sequence[NewsStatus], decay_per_h: float
+        self, source_id: int, statuses: Sequence[NewsStatus], priority: Priority
     ) -> list[QueuedRef]:
         queued = [
             i
@@ -78,7 +79,7 @@ class NewsRepo:
             for i in queued
         ]
 
-    async def priority_of(self, news_id: int, decay_per_h: float) -> float | None:
+    async def priority_of(self, news_id: int, priority: Priority) -> float | None:
         item = self.db.items.get(news_id)
         return item.priority if item else None
 
@@ -111,7 +112,7 @@ async def _admit(
     forced: bool = False,
 ) -> AdmitResult:
     return await admit_to_queue(
-        news_id, SOURCE, expected, _repos(db), max_per_source, DECAY, forced=forced
+        news_id, SOURCE, expected, _repos(db), max_per_source, PRIORITY, forced=forced
     )
 
 
@@ -277,7 +278,7 @@ async def test_trim_removes_extra_posts() -> None:
     for index, score in enumerate([0.1, 0.2, 0.3, 0.9, 0.8], start=1):
         db.add(index, score)
 
-    displaced = await trim_queue(_repos(db), 2, DECAY)
+    displaced = await trim_queue(_repos(db), 2, PRIORITY)
     assert displaced == 3
     assert _queue(db) == {4, 5}, "остались сильнейшие"
     assert all(db.reasons[i] == REASON_QUEUE_LIMIT for i in (1, 2, 3))
@@ -290,7 +291,7 @@ async def test_trim_touches_only_overfilled_sources() -> None:
     for index, score in enumerate([0.1, 0.2, 0.3], start=10):
         db.add(index, score, source_id=OTHER_SOURCE)
 
-    assert await trim_queue(_repos(db), 2, DECAY) == 1
+    assert await trim_queue(_repos(db), 2, PRIORITY) == 1
     assert _queue(db) == {1, 2}
     assert _queue(db, OTHER_SOURCE) == {11, 12}
     assert db.locked == [OTHER_SOURCE]
@@ -300,7 +301,7 @@ async def test_trim_does_nothing_within_limit() -> None:
     db = Db()
     db.add(1, 0.5)
     db.add(2, 0.6)
-    assert await trim_queue(_repos(db), 2, DECAY) == 0
+    assert await trim_queue(_repos(db), 2, PRIORITY) == 0
     assert db.locked == []
 
 
@@ -308,5 +309,5 @@ async def test_trim_with_zero_limit_does_nothing() -> None:
     db = Db()
     for index in range(1, 5):
         db.add(index, 0.5)
-    assert await trim_queue(_repos(db), 0, DECAY) == 0
+    assert await trim_queue(_repos(db), 0, PRIORITY) == 0
     assert len(_queue(db)) == 4

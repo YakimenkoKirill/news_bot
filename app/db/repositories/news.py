@@ -92,16 +92,70 @@ class RawNews(Protocol):
         raise NotImplementedError
 
 
-def _priority(decay_per_h: float) -> ColumnElement[float]:
+class PriorityWeights(Protocol):
+    """Весы приоритета из секции publisher (PublisherConfig подходит структурно)."""
+
+    @property
+    def score_decay_per_h(self) -> float:
+        """Снижение приоритета за час возраста."""
+        raise NotImplementedError
+
+    @property
+    def cluster_bonus(self) -> float:
+        """Надбавка за каждый дополнительный источник события."""
+        raise NotImplementedError
+
+    @property
+    def cluster_bonus_max(self) -> int:
+        """Сколько дополнительных источников учитывать максимум."""
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class Priority:
+    """Параметры приоритета публикации.
+
+    Attributes:
+        decay_per_h: Снижение приоритета за час возраста (publisher.score_decay_per_h).
+        cluster_bonus: Надбавка за каждый дополнительный источник события
+            (publisher.cluster_bonus); 0 — порядок только по оценке и свежести.
+        cluster_bonus_max: Предел числа учитываемых дополнительных источников
+            (publisher.cluster_bonus_max).
+    """
+
+    decay_per_h: float
+    cluster_bonus: float = 0.0
+    cluster_bonus_max: int = 0
+
+    @classmethod
+    def from_config(cls, cfg: PriorityWeights) -> Priority:
+        """Собирает параметры из секции publisher."""
+        return cls(
+            decay_per_h=cfg.score_decay_per_h,
+            cluster_bonus=cfg.cluster_bonus,
+            cluster_bonus_max=cfg.cluster_bonus_max,
+        )
+
+    @property
+    def max_bonus(self) -> float:
+        """Наибольшая возможная надбавка за источники."""
+        return self.cluster_bonus * self.cluster_bonus_max
+
+
+def _priority(priority: Priority) -> ColumnElement[float]:
     """Ключ сортировки очереди публикации (больше — раньше).
 
-    priority = score − decay × возраст_в_часах. Слагаемое −decay × now одинаково
-    для всех постов, поэтому сортировка идёт по score + decay × epoch(время) / 3600:
-    порядок не зависит от текущего времени.
+    priority = score − decay × возраст_в_часах + бонус за источники. Слагаемое
+    −decay × now одинаково для всех постов, поэтому сортировка идёт по
+    score + decay × epoch(время) / 3600: порядок не зависит от текущего времени.
+    Бонус — cluster_bonus за каждый источник события сверх первого, но не больше
+    чем за cluster_bonus_max источников.
     """
     published = func.coalesce(NewsItem.published_at, NewsItem.created_at)
     hours = func.extract("epoch", published) / _SECONDS_PER_HOUR
-    return ProcessedPost.relevance_score + decay_per_h * hours
+    sources = func.coalesce(NewsItem.cluster_sources, 1) - 1
+    bonus = priority.cluster_bonus * func.least(sources, priority.cluster_bonus_max)
+    return ProcessedPost.relevance_score + priority.decay_per_h * hours + bonus
 
 
 def _check_statuses(statuses: Sequence[NewsStatus]) -> list[NewsStatus]:
@@ -111,19 +165,23 @@ def _check_statuses(statuses: Sequence[NewsStatus]) -> list[NewsStatus]:
     return result
 
 
-def _check_decay(decay_per_h: float) -> None:
-    if decay_per_h < 0:
-        raise ValueError(f"decay_per_h не может быть отрицательным, получено {decay_per_h}")
+def _check_priority(priority: Priority) -> None:
+    if priority.decay_per_h < 0:
+        raise ValueError(
+            f"decay_per_h не может быть отрицательным, получено {priority.decay_per_h}"
+        )
+    if priority.cluster_bonus < 0 or priority.cluster_bonus_max < 0:
+        raise ValueError(f"бонус за источники не может быть отрицательным: {priority}")
 
 
 def _prepared_query(
-    statuses: Sequence[NewsStatus], decay_per_h: float
+    statuses: Sequence[NewsStatus], priority: Priority
 ) -> Select[NewsItem, ProcessedPost]:
     return (
         select(NewsItem, ProcessedPost)
         .join(ProcessedPost, ProcessedPost.news_item_id == NewsItem.id)
         .where(NewsItem.status.in_(statuses))
-        .order_by(_priority(decay_per_h).desc(), NewsItem.id)
+        .order_by(_priority(priority).desc(), NewsItem.id)
     )
 
 
@@ -343,7 +401,7 @@ class NewsRepository:
     async def list_prepared(
         self,
         statuses: Sequence[NewsStatus],
-        decay_per_h: float,
+        priority: Priority,
         limit: int,
         offset: int,
     ) -> list[tuple[NewsItem, ProcessedPost]]:
@@ -353,7 +411,7 @@ class NewsRepository:
 
         Args:
             statuses: Статусы новостей.
-            decay_per_h: Снижение оценки за час возраста (0 — только по оценке).
+            priority: Параметры приоритета: старение оценки и бонус за источники.
             limit: Сколько строк вернуть.
             offset: Сколько строк пропустить.
 
@@ -361,15 +419,16 @@ class NewsRepository:
             Пары (новость, пересказ).
 
         Raises:
-            ValueError: Пустой список статусов, limit <= 0, offset < 0 или decay_per_h < 0.
+            ValueError: Пустой список статусов, limit <= 0, offset < 0 или
+                отрицательные параметры приоритета.
         """
         checked = _check_statuses(statuses)
-        _check_decay(decay_per_h)
+        _check_priority(priority)
         if limit <= 0:
             raise ValueError(f"limit должен быть положительным, получено {limit}")
         if offset < 0:
             raise ValueError(f"offset не может быть отрицательным, получено {offset}")
-        stmt = _prepared_query(checked, decay_per_h).limit(limit).offset(offset)
+        stmt = _prepared_query(checked, priority).limit(limit).offset(offset)
         rows = (await self._session.execute(stmt)).all()
         return [(news, post) for news, post in rows]
 
@@ -389,7 +448,7 @@ class NewsRepository:
         return int(await self._session.scalar(stmt) or 0)
 
     async def claim_next(
-        self, statuses: Sequence[NewsStatus], decay_per_h: float
+        self, statuses: Sequence[NewsStatus], priority: Priority
     ) -> NewsItem | None:
         """Захватывает пост с наибольшим приоритетом (FOR UPDATE SKIP LOCKED).
 
@@ -397,12 +456,12 @@ class NewsRepository:
         конца транзакции вызывающего.
 
         Raises:
-            ValueError: Пустой список статусов или decay_per_h < 0.
+            ValueError: Пустой список статусов или отрицательные параметры приоритета.
         """
         checked = _check_statuses(statuses)
-        _check_decay(decay_per_h)
+        _check_priority(priority)
         stmt = (
-            _prepared_query(checked, decay_per_h)
+            _prepared_query(checked, priority)
             .limit(1)
             .with_for_update(skip_locked=True, of=NewsItem)
             .execution_options(populate_existing=True)
@@ -459,6 +518,33 @@ class NewsRepository:
             StuckRef(news_id=news_id, title=title, sent=bool(has_sent))
             for news_id, title, has_sent in rows
         ]
+
+    async def refresh_cluster_sources(self, cluster_id: int) -> int:
+        """Пересчитывает число разных источников кластера и пишет его корню.
+
+        Счётчик хранится у корневой новости кластера: по нему очередь даёт бонус
+        событию, о котором написали несколько источников. Дубль из того же
+        источника число не меняет — считаются только различные source_id.
+
+        Args:
+            cluster_id: Id корневой новости кластера.
+
+        Returns:
+            Новое число источников; 0, если корня нет.
+        """
+        counted = (
+            select(func.count(func.distinct(NewsItem.source_id)))
+            .where(or_(NewsItem.id == cluster_id, NewsItem.cluster_id == cluster_id))
+            .scalar_subquery()
+        )
+        stmt = (
+            update(NewsItem)
+            .where(NewsItem.id == cluster_id)
+            .values(cluster_sources=counted)
+            .returning(NewsItem.cluster_sources)
+            .execution_options(populate_existing=True)
+        )
+        return int((await self._session.scalars(stmt)).one_or_none() or 0)
 
     async def strip_texts(self, before: datetime, limit: int) -> int:
         """Очищает тексты старых новостей в конечных статусах.
@@ -554,38 +640,38 @@ class NewsRepository:
         return int(await self._session.scalar(stmt) or 0)
 
     async def queued_by_source(
-        self, source_id: int, statuses: Sequence[NewsStatus], decay_per_h: float
+        self, source_id: int, statuses: Sequence[NewsStatus], priority: Priority
     ) -> list[QueuedRef]:
         """Посты источника в очереди, от самого слабого к самому сильному.
 
         Порядок обратен list_prepared: первым идёт тот, кого вытеснять.
 
         Raises:
-            ValueError: Пустой список статусов или decay_per_h < 0.
+            ValueError: Пустой список статусов или отрицательные параметры приоритета.
         """
         checked = _check_statuses(statuses)
-        _check_decay(decay_per_h)
-        priority = _priority(decay_per_h)
+        _check_priority(priority)
+        key = _priority(priority)
         stmt = (
-            select(NewsItem.id, NewsItem.status, priority)
+            select(NewsItem.id, NewsItem.status, key)
             .join(ProcessedPost, ProcessedPost.news_item_id == NewsItem.id)
             .where(NewsItem.source_id == source_id, NewsItem.status.in_(checked))
-            .order_by(priority, NewsItem.id.desc())
+            .order_by(key, NewsItem.id.desc())
         )
         rows = (await self._session.execute(stmt)).all()
         return [
             QueuedRef(news_id=row[0], status=NewsStatus(row[1]), priority=row[2]) for row in rows
         ]
 
-    async def priority_of(self, news_id: int, decay_per_h: float) -> float | None:
+    async def priority_of(self, news_id: int, priority: Priority) -> float | None:
         """Приоритет новости или None, если новости нет или у неё нет пересказа.
 
         Raises:
-            ValueError: decay_per_h < 0.
+            ValueError: Отрицательные параметры приоритета.
         """
-        _check_decay(decay_per_h)
+        _check_priority(priority)
         stmt = (
-            select(_priority(decay_per_h))
+            select(_priority(priority))
             .select_from(NewsItem)
             .join(ProcessedPost, ProcessedPost.news_item_id == NewsItem.id)
             .where(NewsItem.id == news_id)

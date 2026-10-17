@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.base import session_scope
 from app.db.models import NewsItem, ProcessedPost, Source
-from app.db.repositories.news import NewsRepository
+from app.db.repositories.news import NewsRepository, Priority
 from app.db.repositories.sources import SourceRepository
 from app.domain.enums import NewsStatus, SourceType
 from app.pipeline.queue_limit import (
@@ -25,6 +25,7 @@ pytestmark = pytest.mark.integration
 S = NewsStatus
 NOW = datetime(2026, 10, 16, 12, 0, tzinfo=UTC)
 DECAY = 0.02
+PRIORITY = Priority(DECAY)
 
 
 class Fixture:
@@ -89,7 +90,7 @@ class Fixture:
     async def queue(self, source_id: int) -> list[int]:
         async with self.scope() as session:
             queued = await NewsRepository(session).queued_by_source(
-                source_id, QUEUE_STATUSES, DECAY
+                source_id, QUEUE_STATUSES, PRIORITY
             )
         return [item.news_id for item in queued]
 
@@ -106,7 +107,7 @@ async def test_parallel_admits_respect_limit_of_one(
     async def admit(news_id: int) -> AdmitOutcome:
         async with fixture.scope() as session:
             result = await admit_to_queue(
-                news_id, source_id, S.PROCESSED, fixture.repos(session), 1, DECAY
+                news_id, source_id, S.PROCESSED, fixture.repos(session), 1, PRIORITY
             )
             return result.outcome
 
@@ -127,7 +128,9 @@ async def test_parallel_admits_keep_limit_of_two(
 
     async def admit(news_id: int) -> None:
         async with fixture.scope() as session:
-            await admit_to_queue(news_id, source_id, S.PROCESSED, fixture.repos(session), 2, DECAY)
+            await admit_to_queue(
+                news_id, source_id, S.PROCESSED, fixture.repos(session), 2, PRIORITY
+            )
 
     await asyncio.gather(*(admit(news_id) for news_id in candidates))
 
@@ -147,7 +150,7 @@ async def test_admit_displaces_weakest_on_real_data(
 
     async with fixture.scope() as session:
         result = await admit_to_queue(
-            fresh, source_id, S.PROCESSED, fixture.repos(session), 2, DECAY
+            fresh, source_id, S.PROCESSED, fixture.repos(session), 2, PRIORITY
         )
     assert result.outcome is AdmitOutcome.ADMITTED_DISPLACED
     assert result.displaced_id == weak
@@ -170,7 +173,7 @@ async def test_trim_queue_on_real_data(
     kept_second = [await fixture.news(second, score) for score in (0.4, 0.5)]
 
     async with fixture.scope() as session:
-        displaced = await trim_queue(fixture.repos(session), 2, DECAY)
+        displaced = await trim_queue(fixture.repos(session), 2, PRIORITY)
 
     assert displaced == 3
     assert len(await fixture.queue(first)) == 2
@@ -186,5 +189,5 @@ async def test_trim_queue_without_limit(
         await fixture.news(source_id, score)
 
     async with fixture.scope() as session:
-        assert await trim_queue(fixture.repos(session), 0, DECAY) == 0
+        assert await trim_queue(fixture.repos(session), 0, PRIORITY) == 0
     assert len(await fixture.queue(source_id)) == 3

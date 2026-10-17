@@ -41,6 +41,7 @@ NEWS_COLUMNS = {
     "status",
     "reject_reason",
     "cluster_id",
+    "cluster_sources",
     "raw_meta",
     "created_at",
     "updated_at",

@@ -20,7 +20,7 @@ import structlog
 
 from app.config import PublisherConfig
 from app.db.models import ProcessedPost, Publication
-from app.db.repositories.news import StaleStatusError, StuckRef
+from app.db.repositories.news import Priority, StaleStatusError, StuckRef
 from app.domain.alerts import AlertEvent, AlertKind, AlertSink
 from app.domain.enums import NewsStatus, PublicationStatus
 from app.logging import bind_context
@@ -55,7 +55,7 @@ class PublishNewsRepo(Protocol):
     """Нужная стадии часть NewsRepository."""
 
     async def claim_next(
-        self, statuses: Sequence[NewsStatus], decay_per_h: float
+        self, statuses: Sequence[NewsStatus], priority: Priority
     ) -> QueuedNews | None:
         """Захватывает пост с наибольшим приоритетом (FOR UPDATE SKIP LOCKED)."""
         raise NotImplementedError
@@ -264,7 +264,7 @@ async def publish_due(now: datetime, deps: PublishDeps) -> PublishReport:
             return PublishReport(skipped="slot", next_slot=slot)
 
         item = await deps.news_repo(session).claim_next(
-            PUBLISHABLE_STATUSES, deps.cfg.score_decay_per_h
+            PUBLISHABLE_STATUSES, Priority.from_config(deps.cfg)
         )
         if item is None:
             return PublishReport(skipped="empty")

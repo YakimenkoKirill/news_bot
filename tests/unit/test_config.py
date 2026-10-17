@@ -288,6 +288,27 @@ def test_ui_unknown_key_rejected(configs_dir: Path) -> None:
         load_settings(configs_dir, "prod")
 
 
+def test_cluster_bonus_keys(configs_dir: Path) -> None:
+    publisher = load_settings(configs_dir).publisher
+    assert publisher.cluster_bonus == 0.05
+    assert publisher.cluster_bonus_max == 3
+
+
+def test_zero_cluster_bonus_allowed(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text(
+        "publisher:\n  cluster_bonus: 0\n  cluster_bonus_max: 0\n", encoding="utf-8"
+    )
+    publisher = load_settings(configs_dir, "prod").publisher
+    assert (publisher.cluster_bonus, publisher.cluster_bonus_max) == (0, 0)
+
+
+@pytest.mark.parametrize("key", ["cluster_bonus", "cluster_bonus_max"])
+def test_negative_cluster_bonus_rejected(configs_dir: Path, key: str) -> None:
+    (configs_dir / "prod.yaml").write_text(f"publisher:\n  {key}: -1\n", encoding="utf-8")
+    with pytest.raises(ValidationError, match=key):
+        load_settings(configs_dir, "prod")
+
+
 def test_retention_section(configs_dir: Path) -> None:
     settings = load_settings(configs_dir)
     assert settings.retention.text_days == 30

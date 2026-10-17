@@ -67,7 +67,7 @@ def test_repeated_upgrade_is_noop(clean_db: Config, test_database_url: str) -> N
     head = ScriptDirectory.from_config(clean_db).get_current_head()
     command.upgrade(clean_db, "head")
     command.upgrade(clean_db, "head")
-    assert _current_revision(test_database_url) == head == "0007"
+    assert _current_revision(test_database_url) == head == "0008"
 
 
 def test_news_items_indexes(clean_db: Config, test_database_url: str) -> None:

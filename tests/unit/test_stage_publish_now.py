@@ -10,7 +10,7 @@ import structlog
 
 from app.config import PublisherConfig
 from app.db.models import ProcessedPost, Publication
-from app.db.repositories.news import StuckRef
+from app.db.repositories.news import Priority, StuckRef
 from app.domain.alerts import AlertEvent, AlertKind
 from app.domain.enums import NewsStatus, PublicationStatus
 from app.domain.status import ensure_transition
@@ -47,6 +47,7 @@ class News:
     created_at: datetime = NOON - timedelta(hours=1)
     published_at: datetime | None = None
     updated_at: datetime = NOON
+    cluster_sources: int = 1
 
 
 @dataclass
@@ -71,18 +72,21 @@ class NewsRepo:
     def __init__(self, db: Db) -> None:
         self.db = db
 
-    async def claim_next(self, statuses: Sequence[NewsStatus], decay_per_h: float) -> News | None:
+    async def claim_next(self, statuses: Sequence[NewsStatus], priority: Priority) -> News | None:
         queued = [
             n for n in self.db.news.values() if n.status in statuses and n.id not in self.db.busy
         ]
 
-        def priority(n: News) -> float:
+        def key(n: News) -> float:
             moment = n.published_at or n.created_at
             post = self.db.posts.get(n.id)
             score = post.relevance_score if post is not None else 0.0
-            return score + decay_per_h * moment.timestamp() / SECONDS_PER_HOUR
+            bonus = priority.cluster_bonus * min(
+                max(n.cluster_sources - 1, 0), priority.cluster_bonus_max
+            )
+            return score + priority.decay_per_h * moment.timestamp() / SECONDS_PER_HOUR + bonus
 
-        ordered = sorted(queued, key=lambda n: (-priority(n), n.id))
+        ordered = sorted(queued, key=lambda n: (-key(n), n.id))
         return ordered[0] if ordered else None
 
     async def claim_one(self, news_id: int, statuses: Sequence[NewsStatus]) -> News | None:

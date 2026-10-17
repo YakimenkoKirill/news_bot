@@ -126,6 +126,7 @@ class NewsItem(Base):
     cluster_id: Mapped[int | None] = mapped_column(
         ForeignKey("news_items.id", ondelete="SET NULL"), nullable=True
     )
+    cluster_sources: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"))
     raw_meta: Mapped[dict[str, Any]] = mapped_column(
         JSONB, default=dict, server_default=text("'{}'::jsonb")
     )

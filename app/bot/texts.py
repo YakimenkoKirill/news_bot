@@ -122,6 +122,7 @@ QUEUE_NOT_IN_QUEUE = "Пост уже не в очереди: {status}"
 QUEUE_DELETED = "удалён"
 QUEUE_REVIEW_WARNING = " ⚠️"
 QUEUE_SENDING = "⏳ отправляется"
+QUEUE_CLUSTER_MARK = " 🔁{count}"
 
 
 def queue_header(tab: str, count: int, page: int, pages: int) -> str:
@@ -144,15 +145,28 @@ def source_load(used: int, limit: int) -> str:
     return f" {lock}{used}/{limit}"
 
 
+def cluster_mark(sources: int) -> str:
+    """Пометка «🔁N» для события, о котором написали несколько источников."""
+    if sources <= 1:
+        return ""
+    return QUEUE_CLUSTER_MARK.format(count=sources)
+
+
 def queue_line(
-    number: int, title: str, source: str, score: float, eta: str | None, load: str = ""
+    number: int,
+    title: str,
+    source: str,
+    score: float,
+    eta: str | None,
+    load: str = "",
+    cluster: str = "",
 ) -> str:
     """Строка вкладки «В очереди»; title и source уже экранированы.
 
     В поле eta — ожидаемое время выхода или QUEUE_SENDING для поста, который
-    уже отправляется.
+    уже отправляется; cluster — пометка числа источников (cluster_mark).
     """
-    line = f"{number}. {title} — {source}{load} · ★{score:.2f}"
+    line = f"{number}. {title} — {source}{load}{cluster} · ★{score:.2f}"
     return f"{line} · {eta}" if eta else line
 
 

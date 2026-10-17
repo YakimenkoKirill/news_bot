@@ -7,7 +7,7 @@ from typing import Any
 import structlog
 
 from app.config import PublisherConfig
-from app.db.repositories.news import StaleStatusError, StuckRef
+from app.db.repositories.news import Priority, StaleStatusError, StuckRef
 from app.domain.alerts import AlertEvent, AlertKind
 from app.domain.enums import NewsStatus
 from app.domain.status import ensure_transition
@@ -44,7 +44,7 @@ class NewsRepo:
     def __init__(self, db: Db) -> None:
         self.db = db
 
-    async def claim_next(self, statuses: Sequence[NewsStatus], decay_per_h: float) -> None:
+    async def claim_next(self, statuses: Sequence[NewsStatus], priority: Priority) -> None:
         return None
 
     async def set_status(

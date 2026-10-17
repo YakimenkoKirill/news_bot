@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.base import session_scope
 from app.db.models import NewsItem, ProcessedPost, Source
-from app.db.repositories.news import NewsRepository
+from app.db.repositories.news import NewsRepository, Priority
 from app.db.repositories.posts import ProcessedPostRepository
 from app.domain.enums import NewsStatus, SourceType
 from app.pipeline.retry import RetryDeps, RetryOutcome, retry_failed
@@ -151,7 +151,7 @@ async def test_retry_with_post_returns_to_publish_queue(
     assert await fixture.status(news_id) is S.APPROVED
 
     async with fixture.scope() as session:
-        claimed = await NewsRepository(session).claim_next([S.APPROVED, S.SCHEDULED], 0.0)
+        claimed = await NewsRepository(session).claim_next([S.APPROVED, S.SCHEDULED], Priority(0.0))
         assert claimed is not None and claimed.id == news_id
 
 

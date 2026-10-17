@@ -55,6 +55,10 @@ class NormalizeNewsRepo(DedupRepo, Protocol):
         """Меняет статус через машину состояний."""
         raise NotImplementedError
 
+    async def refresh_cluster_sources(self, cluster_id: int) -> int:
+        """Пересчитывает число источников кластера у его корня."""
+        raise NotImplementedError
+
 
 class KeywordWord(Protocol):
     """Ключевое слово (Keyword подходит структурно)."""
@@ -217,7 +221,13 @@ async def _process_item(
         level = result.level.value if result.level else "unknown"
         reason = f"{REASON_DUPLICATE}:{level}:{result.duplicate_of}"
         await news.set_status(item.id, NewsStatus.NEW, NewsStatus.DUPLICATE, reason)
-        log.info("normalize.duplicate", reason=reason, cluster_id=result.cluster_id)
+        sources = await news.refresh_cluster_sources(result.cluster_id)
+        log.info(
+            "normalize.duplicate",
+            reason=reason,
+            cluster_id=result.cluster_id,
+            cluster_sources=sources,
+        )
         return "duplicates"
     await news.set_status(item.id, NewsStatus.NEW, NewsStatus.NORMALIZED)
     return "normalized"

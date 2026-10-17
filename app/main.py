@@ -58,7 +58,7 @@ from app.db.models import Incident
 from app.db.repositories.ai_requests import AiRequestRepository
 from app.db.repositories.incidents import IncidentRepository
 from app.db.repositories.misc import AdminRepository, KeywordRepository, SettingsRepository
-from app.db.repositories.news import NewsRepository
+from app.db.repositories.news import NewsRepository, Priority
 from app.db.repositories.posts import ProcessedPostRepository, PublicationRepository
 from app.db.repositories.screens import ScreenRepository
 from app.db.repositories.sources import SourceRepository
@@ -288,7 +288,7 @@ def build_components(settings: Settings) -> list[Component]:
         news_repo=NewsRepository,
         source_repo=SourceRepository,
         max_per_source=settings.publisher.max_queued_per_source,
-        decay_per_h=settings.publisher.score_decay_per_h,
+        priority=Priority.from_config(settings.publisher),
     )
     ai_deps = AiStageDeps(
         session_scope=scope,
@@ -516,7 +516,7 @@ def build_components(settings: Settings) -> list[Component]:
         QueueTrimComponent(
             scope,
             settings.publisher.max_queued_per_source,
-            settings.publisher.score_decay_per_h,
+            Priority.from_config(settings.publisher),
         ),
         RecoverStuckComponent(publish_deps, lambda: datetime.now(UTC)),
         http,
@@ -540,11 +540,11 @@ class QueueTrimComponent:
         self,
         scope: Callable[[], AbstractAsyncContextManager[AsyncSession]],
         max_per_source: int,
-        decay_per_h: float,
+        priority: Priority,
     ) -> None:
         self._scope = scope
         self._max_per_source = max_per_source
-        self._decay_per_h = decay_per_h
+        self._priority = priority
 
     async def start(self) -> None:
         """Вытесняет лишние посты каждого источника одной транзакцией."""
@@ -553,7 +553,7 @@ class QueueTrimComponent:
                 repos = QueueLimitRepos(
                     news=NewsRepository(session), sources=SourceRepository(session)
                 )
-                await trim_queue(repos, self._max_per_source, self._decay_per_h)
+                await trim_queue(repos, self._max_per_source, self._priority)
         except Exception:
             log.exception("queue_limit.trim_failed")
             raise

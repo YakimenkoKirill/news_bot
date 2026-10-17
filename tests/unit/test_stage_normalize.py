@@ -40,6 +40,8 @@ class Row:
     content_hash: str | None = None
     simhash: int | None = None
     cluster_id: int | None = None
+    cluster_sources: int = 1
+    source_id: int = 1
 
 
 @dataclass
@@ -47,6 +49,7 @@ class Db:
     rows: dict[int, Row] = field(default_factory=dict)
     keywords: dict[KeywordType, list[str]] = field(default_factory=dict)
     fail_update_for: int | None = None
+    cluster_refreshes: list[int] = field(default_factory=list)
 
 
 class FakeNewsRepo:
@@ -92,6 +95,16 @@ class FakeNewsRepo:
     ) -> Row | None:
         rows = self._window(since, exclude_id)
         return next((r for r in rows if r.content_hash == content_hash), None)
+
+    async def refresh_cluster_sources(self, cluster_id: int) -> int:
+        members = [r for r in self.db.rows.values() if r.cluster_id == cluster_id]
+        sources = {r.source_id for r in members}
+        root = self.db.rows.get(cluster_id)
+        if root is not None:
+            sources.add(root.source_id)
+            root.cluster_sources = len(sources)
+        self.db.cluster_refreshes.append(cluster_id)
+        return len(sources)
 
     async def simhash_candidates(
         self, bands: Sequence[int], since: datetime
@@ -212,6 +225,36 @@ async def test_duplicate_by_hash_joins_existing_cluster() -> None:
     assert report == StageReport(claimed=1, duplicates=1)
     assert db.rows[2].reject_reason == "duplicate:hash:1"
     assert db.rows[2].cluster_id == 77
+
+
+async def test_duplicate_triggers_cluster_recount() -> None:
+    """Дубль из другого источника: счётчик источников пересчитывается у корня."""
+    db = Db(
+        {
+            1: _row(1),
+            2: _row(2, url="https://example.com/news/1?utm_medium=x"),
+        }
+    )
+    db.rows[2].source_id = 2
+    await process_new_batch(NOW, _deps(db))
+
+    assert db.cluster_refreshes == [1]
+    assert db.rows[1].cluster_sources == 2
+    assert db.rows[2].cluster_sources == 1, "счётчик хранится у корня кластера"
+
+
+async def test_duplicate_from_same_source_keeps_counter() -> None:
+    db = Db({1: _row(1), 2: _row(2, url="https://example.com/news/1?utm_medium=x")})
+    await process_new_batch(NOW, _deps(db))
+
+    assert db.cluster_refreshes == [1]
+    assert db.rows[1].cluster_sources == 1
+
+
+async def test_unique_news_does_not_recount() -> None:
+    db = Db({1: _row(1)})
+    await process_new_batch(NOW, _deps(db))
+    assert db.cluster_refreshes == []
 
 
 async def test_one_item_error_does_not_break_batch() -> None:

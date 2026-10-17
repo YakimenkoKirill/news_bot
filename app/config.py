@@ -217,6 +217,8 @@ class PublisherConfig(BaseModel):
     quiet_hours: list[str]
     max_retries: int = Field(ge=0)
     score_decay_per_h: float = Field(ge=0)
+    cluster_bonus: float = Field(ge=0)
+    cluster_bonus_max: int = Field(ge=0)
     footer_mark: str
     footer_title: str
     footer_url: str

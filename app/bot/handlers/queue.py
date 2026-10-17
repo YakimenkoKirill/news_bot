@@ -30,6 +30,7 @@ from app.bot.moderation import REVIEW_NOTE_PREFIX
 from app.bot.preview import PreviewDeps, build_preview, mark_message, send_preview
 from app.config import PublisherConfig
 from app.db.models import NewsItem, ProcessedPost
+from app.db.repositories.news import Priority
 from app.domain.enums import NewsStatus
 from app.pipeline.ai.prompts import truncate_words
 from app.publisher.slots import queue_eta
@@ -58,7 +59,7 @@ class QueueNewsRepo(Protocol):
     async def list_prepared(
         self,
         statuses: Sequence[NewsStatus],
-        decay_per_h: float,
+        priority: Priority,
         limit: int,
         offset: int,
     ) -> Sequence[tuple[NewsItem, ProcessedPost]]:
@@ -185,7 +186,9 @@ async def render_page(
         page = min(max(page, 0), pages - 1)
         offset = page * deps.page_size
         rows = list(
-            await news_repo.list_prepared(statuses, cfg.score_decay_per_h, deps.page_size, offset)
+            await news_repo.list_prepared(
+                statuses, Priority.from_config(cfg), deps.page_size, offset
+            )
         )
         source_repo = deps.source_repo(session)
         names: dict[int, str] = {}
@@ -235,6 +238,7 @@ async def render_page(
                     score,
                     eta_text,
                     texts.source_load(used, deps.max_per_source),
+                    texts.cluster_mark(news.cluster_sources or 1),
                 )
             )
         else:

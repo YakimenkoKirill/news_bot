@@ -10,7 +10,7 @@ from app.config import PublisherConfig
 from app.db.base import session_scope
 from app.db.models import NewsItem, ProcessedPost, Publication, Source
 from app.db.repositories.misc import SettingsRepository
-from app.db.repositories.news import NewsRepository
+from app.db.repositories.news import NewsRepository, Priority
 from app.db.repositories.posts import ProcessedPostRepository, PublicationRepository
 from app.db.repositories.sources import SourceRepository
 from app.domain.enums import NewsStatus, PublicationStatus, SourceType
@@ -125,7 +125,7 @@ class Env:
     async def queue_ids(self) -> list[int]:
         async with self.scope() as session:
             rows = await NewsRepository(session).list_prepared(
-                PUBLISHABLE_STATUSES, CFG.score_decay_per_h, limit=100, offset=0
+                PUBLISHABLE_STATUSES, Priority.from_config(CFG), limit=100, offset=0
             )
         return [news.id for news, _ in rows]
 
