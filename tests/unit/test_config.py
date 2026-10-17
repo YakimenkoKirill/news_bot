@@ -288,6 +288,34 @@ def test_ui_unknown_key_rejected(configs_dir: Path) -> None:
         load_settings(configs_dir, "prod")
 
 
+def test_simhash_max_distance(configs_dir: Path) -> None:
+    assert load_settings(configs_dir).dedup.simhash_max_distance == 3
+
+
+@pytest.mark.parametrize("value", [4, 10, 64])
+def test_too_large_simhash_distance_rejected(configs_dir: Path, value: int) -> None:
+    """Поиск по частям SimHash корректен только до расстояния 3."""
+    (configs_dir / "prod.yaml").write_text(
+        f"dedup:\n  simhash_max_distance: {value}\n", encoding="utf-8"
+    )
+    with pytest.raises(ValidationError, match="simhash_max_distance"):
+        load_settings(configs_dir, "prod")
+
+
+@pytest.mark.parametrize("value", [0, 1, 3])
+def test_allowed_simhash_distances(configs_dir: Path, value: int) -> None:
+    (configs_dir / "prod.yaml").write_text(
+        f"dedup:\n  simhash_max_distance: {value}\n", encoding="utf-8"
+    )
+    assert load_settings(configs_dir, "prod").dedup.simhash_max_distance == value
+
+
+def test_negative_simhash_distance_rejected(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text("dedup:\n  simhash_max_distance: -1\n", encoding="utf-8")
+    with pytest.raises(ValidationError, match="simhash_max_distance"):
+        load_settings(configs_dir, "prod")
+
+
 def test_ai_max_output_tokens(configs_dir: Path) -> None:
     assert load_settings(configs_dir).ai.max_output_tokens == 800
 

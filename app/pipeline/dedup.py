@@ -9,13 +9,16 @@ from typing import Protocol
 
 from simhash import Simhash
 
-from app.config import DedupConfig
+from app.config import SIMHASH_BAND_BITS, SIMHASH_BANDS, DedupConfig
 from app.pipeline.normalizer import normalize_for_hash
 
 SIMHASH_BITS = 64
 SHINGLE_WORDS = 3
 _UNSIGNED_LIMIT = 1 << SIMHASH_BITS
 _SIGNED_MAX = (1 << (SIMHASH_BITS - 1)) - 1
+_BAND_MASK = (1 << SIMHASH_BAND_BITS) - 1
+
+Bands = tuple[int, ...]
 
 
 def shingles(text: str, size: int = SHINGLE_WORDS) -> list[str]:
@@ -61,6 +64,26 @@ def to_db(value: int) -> int:
 def from_db(value: int) -> int:
     """BIGINT со знаком из БД -> беззнаковое 64-битное число."""
     return value + _UNSIGNED_LIMIT if value < 0 else value
+
+
+def simhash_bands(value: int) -> Bands:
+    """Делит 64-битный SimHash на 4 части по 16 бит, от старших к младшим.
+
+    Если расстояние Хэмминга между двумя значениями не больше 3, то хотя бы одна
+    из четырёх частей у них совпадает точно (принцип Дирихле): различий меньше,
+    чем частей. На этом и держится поиск кандидатов по индексу.
+
+    Args:
+        value: SimHash в беззнаковой форме или в форме BIGINT со знаком — биты
+            у них одни и те же, поэтому части считаются одинаково.
+
+    Returns:
+        Четыре части по 16 бит: биты 48–63, 32–47, 16–31 и 0–15.
+    """
+    return tuple(
+        (value >> (SIMHASH_BAND_BITS * (SIMHASH_BANDS - 1 - index))) & _BAND_MASK
+        for index in range(SIMHASH_BANDS)
+    )
 
 
 class DedupLevel(StrEnum):
@@ -124,13 +147,22 @@ class DedupRepo(Protocol):
         """Новость с тем же хешем в окне."""
         raise NotImplementedError
 
-    async def recent_simhashes(self, since: datetime) -> list[tuple[int, int, int | None]]:
-        """(id, simhash, cluster_id) новостей в окне."""
+    async def simhash_candidates(
+        self, bands: Bands, since: datetime
+    ) -> list[tuple[int, int, int | None]]:
+        """(id, simhash, cluster_id) новостей окна, у которых совпала часть SimHash."""
         raise NotImplementedError
 
 
 class Deduplicator:
-    """Трёхуровневый поиск дублей: канонический URL -> хеш содержимого -> SimHash."""
+    """Трёхуровневый поиск дублей: канонический URL -> хеш содержимого -> SimHash.
+
+    Похожие новости ищутся не перебором окна, а по индексу частей SimHash: в
+    кандидаты попадают только новости, у которых совпала хотя бы одна из четырёх
+    частей, и уже для них считается точное расстояние. Поэтому порог
+    dedup.simhash_max_distance ограничен тройкой — это проверяет валидатор
+    конфигурации, иначе дубль можно было бы не найти.
+    """
 
     def __init__(self, repo: DedupRepo, cfg: DedupConfig) -> None:
         self._repo = repo
@@ -166,7 +198,8 @@ class Deduplicator:
 
         best: tuple[int, int, int | None] | None = None
         best_distance = self._max_distance + 1
-        for other_id, other_hash, other_cluster in await self._repo.recent_simhashes(since):
+        candidates = await self._repo.simhash_candidates(simhash_bands(simhash), since)
+        for other_id, other_hash, other_cluster in candidates:
             if other_id == item_id:
                 continue
             distance = hamming(simhash, other_hash)

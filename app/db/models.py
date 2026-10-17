@@ -92,6 +92,10 @@ class NewsItem(Base):
         Index("ix_news_items_content_hash", "content_hash"),
         Index("ix_news_items_status_created_at", "status", "created_at"),
         Index("ix_news_items_cluster_id", "cluster_id"),
+        Index("ix_news_items_simhash_b0_created_at", "simhash_b0", "created_at"),
+        Index("ix_news_items_simhash_b1_created_at", "simhash_b1", "created_at"),
+        Index("ix_news_items_simhash_b2_created_at", "simhash_b2", "created_at"),
+        Index("ix_news_items_simhash_b3_created_at", "simhash_b3", "created_at"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -107,6 +111,10 @@ class NewsItem(Base):
     published_at: Mapped[datetime | None] = mapped_column(_tz(), nullable=True)
     content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     simhash: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    simhash_b0: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    simhash_b1: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    simhash_b2: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    simhash_b3: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[NewsStatus] = mapped_column(
         _enum_column(NewsStatus),
         default=NewsStatus.NEW,

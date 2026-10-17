@@ -13,7 +13,7 @@ import structlog
 from app.config import DedupConfig, FiltersConfig, NormalizeConfig
 from app.domain.enums import KeywordType, NewsStatus
 from app.logging import bind_context
-from app.pipeline.dedup import Deduplicator, DedupRepo, compute_simhash, to_db
+from app.pipeline.dedup import Deduplicator, DedupRepo, compute_simhash, simhash_bands, to_db
 from app.pipeline.filters import KeywordSets, apply_filters
 from app.pipeline.normalizer import normalize_item
 
@@ -183,6 +183,7 @@ async def _process_item(
     """Обрабатывает одну новость; возвращает ключ счётчика отчёта."""
     fields = normalize_item(item, deps.normalize)
     simhash = compute_simhash(item.title, fields.clean_text, deps.dedup.first_paragraph_chars)
+    bands = simhash_bands(simhash)
     await news.update_fields(
         item.id,
         clean_text=fields.clean_text,
@@ -190,6 +191,10 @@ async def _process_item(
         language=fields.language,
         content_hash=fields.content_hash,
         simhash=to_db(simhash),
+        simhash_b0=bands[0],
+        simhash_b1=bands[1],
+        simhash_b2=bands[2],
+        simhash_b3=bands[3],
     )
 
     view = _FilterView(

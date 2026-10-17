@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 import app.db.models  # noqa: F401  регистрирует модели в Base.metadata
 from app.db.base import Base
+from app.pipeline.dedup import simhash_bands, to_db
 
 pytestmark = pytest.mark.integration
 
@@ -66,7 +67,7 @@ def test_repeated_upgrade_is_noop(clean_db: Config, test_database_url: str) -> N
     head = ScriptDirectory.from_config(clean_db).get_current_head()
     command.upgrade(clean_db, "head")
     command.upgrade(clean_db, "head")
-    assert _current_revision(test_database_url) == head == "0005"
+    assert _current_revision(test_database_url) == head == "0006"
 
 
 def test_news_items_indexes(clean_db: Config, test_database_url: str) -> None:
@@ -215,6 +216,89 @@ def test_0005_copies_history_from_processed_posts(clean_db: Config, test_databas
     assert row.ok is True
     assert row.created_at.isoformat() == "2026-10-10T09:00:00+00:00"
     assert row.news_item_id is not None
+
+
+def test_simhash_bands_added_in_0006(clean_db: Config, test_database_url: str) -> None:
+    command.upgrade(clean_db, "head")
+    columns = {
+        str(column["name"])
+        for column in _with_connection(
+            test_database_url, lambda conn: inspect(conn).get_columns("news_items")
+        )
+    }
+    assert {"simhash_b0", "simhash_b1", "simhash_b2", "simhash_b3"} <= columns
+    indexes = _with_connection(
+        test_database_url, lambda conn: inspect(conn).get_indexes("news_items")
+    )
+    found = {str(index["name"]): index["column_names"] for index in indexes}
+    for band in range(4):
+        assert found[f"ix_news_items_simhash_b{band}_created_at"] == [
+            f"simhash_b{band}",
+            "created_at",
+        ]
+
+    command.downgrade(clean_db, "0005")
+    after = {
+        str(column["name"])
+        for column in _with_connection(
+            test_database_url, lambda conn: inspect(conn).get_columns("news_items")
+        )
+    }
+    assert not {"simhash_b0", "simhash_b3"} & after
+    assert _current_revision(test_database_url) == "0005"
+
+
+def test_0006_fills_bands_of_existing_rows(clean_db: Config, test_database_url: str) -> None:
+    """Части считаются и для отрицательных simhash: биты те же, что у беззнакового."""
+    command.upgrade(clean_db, "0005")
+    unsigned = 0xABCD_1234_5678_9ABC
+    negative = 0xFFFF_0000_1234_5678
+    assert to_db(negative) < 0
+
+    def seed(conn: Connection) -> None:
+        conn.execute(
+            text(
+                "INSERT INTO sources (type, url, name, interval_min) "
+                "VALUES ('rss', 'https://b.example/rss', 'B', 10)"
+            )
+        )
+        for index, value in enumerate((unsigned, negative, None)):
+            conn.execute(
+                text(
+                    "INSERT INTO news_items (source_id, external_id, url, title, raw_text, "
+                    "status, simhash) SELECT id, :ext, :url, 't', 'r', 'new', :simhash "
+                    "FROM sources"
+                ).bindparams(
+                    ext=str(index),
+                    url=f"https://b.example/{index}",
+                    simhash=to_db(value) if value is not None else None,
+                )
+            )
+        conn.commit()
+
+    _with_connection(test_database_url, seed)
+    command.upgrade(clean_db, "head")
+
+    def rows(conn: Connection) -> list[Any]:
+        return list(
+            conn.execute(
+                text(
+                    "SELECT simhash, simhash_b0, simhash_b1, simhash_b2, simhash_b3 "
+                    "FROM news_items ORDER BY external_id"
+                )
+            ).all()
+        )
+
+    first, second, third = _with_connection(test_database_url, rows)
+    assert (first.simhash_b0, first.simhash_b1, first.simhash_b2, first.simhash_b3) == (
+        simhash_bands(unsigned)
+    )
+    assert (second.simhash_b0, second.simhash_b1, second.simhash_b2, second.simhash_b3) == (
+        simhash_bands(negative)
+    )
+    assert second.simhash < 0
+    assert third.simhash is None
+    assert third.simhash_b0 is None
 
 
 def test_autogenerate_finds_no_differences(clean_db: Config, test_database_url: str) -> None:

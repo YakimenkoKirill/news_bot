@@ -98,30 +98,6 @@ async def test_find_by_hash_respects_window(session: AsyncSession) -> None:
     assert await repo.find_by_hash("h2", now - timedelta(days=7)) is None
 
 
-async def test_recent_simhashes(session: AsyncSession) -> None:
-    repo = NewsRepository(session)
-    now = datetime.now(UTC)
-    assert await repo.recent_simhashes(now - timedelta(days=1)) == []
-
-    source_id = await _source(session)
-    a = await repo.add_if_new(Raw(source_id, "a"))
-    b = await repo.add_if_new(Raw(source_id, "b"))
-    old = await repo.add_if_new(Raw(source_id, "old"))
-    await repo.add_if_new(Raw(source_id, "no-hash"))
-    assert a is not None
-    assert b is not None
-    assert old is not None
-    negative = -(2**63)
-    await _set(session, a.id, simhash=negative)
-    await _set(session, b.id, simhash=2**63 - 1, cluster_id=a.id)
-    await _set(session, old.id, simhash=1, created_at=now - timedelta(days=5))
-
-    assert await repo.recent_simhashes(now - timedelta(days=1)) == [
-        (a.id, negative, None),
-        (b.id, 2**63 - 1, a.id),
-    ]
-
-
 async def test_max_tg_message_id_compares_numbers(session: AsyncSession) -> None:
     repo = NewsRepository(session)
     source_id = await _source(session)

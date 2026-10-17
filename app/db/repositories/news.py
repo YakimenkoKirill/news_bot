@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
-from sqlalchemy import BigInteger, ColumnElement, Select, func, select, update
+from sqlalchemy import BigInteger, ColumnElement, Select, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,6 +29,10 @@ UPDATABLE_FIELDS = frozenset(
         "published_at",
         "content_hash",
         "simhash",
+        "simhash_b0",
+        "simhash_b1",
+        "simhash_b2",
+        "simhash_b3",
         "cluster_id",
         "raw_meta",
     }
@@ -228,11 +232,39 @@ class NewsRepository:
             stmt = stmt.where(NewsItem.id != exclude_id)
         return (await self._session.scalars(stmt)).first()
 
-    async def recent_simhashes(self, since: datetime) -> list[tuple[int, int, int | None]]:
-        """Возвращает (id, simhash, cluster_id) новостей с simhash, собранных не раньше since."""
+    async def simhash_candidates(
+        self, bands: Sequence[int], since: datetime
+    ) -> list[tuple[int, int, int | None]]:
+        """Новости окна, у которых хотя бы одна часть SimHash совпала с bands.
+
+        Каждая часть ищется по своему индексу (simhash_bN, created_at), поэтому
+        перебирать всё окно не нужно. Новости без simhash не участвуют: их части
+        равны NULL и ни с чем не совпадают.
+
+        Args:
+            bands: Части SimHash проверяемой новости (simhash_bands).
+            since: Начало окна поиска.
+
+        Returns:
+            Пары (id, simhash, cluster_id) в порядке id.
+
+        Raises:
+            ValueError: Число частей не совпадает с числом столбцов таблицы.
+        """
+        columns = (
+            NewsItem.simhash_b0,
+            NewsItem.simhash_b1,
+            NewsItem.simhash_b2,
+            NewsItem.simhash_b3,
+        )
+        if len(bands) != len(columns):
+            raise ValueError(f"ожидалось {len(columns)} частей simhash, получено {len(bands)}")
         stmt = (
             select(NewsItem.id, NewsItem.simhash, NewsItem.cluster_id)
-            .where(NewsItem.simhash.is_not(None), NewsItem.created_at >= since)
+            .where(
+                NewsItem.created_at >= since,
+                or_(*(column == band for column, band in zip(columns, bands, strict=True))),
+            )
             .order_by(NewsItem.id)
         )
         rows: Sequence[Any] = (await self._session.execute(stmt)).all()

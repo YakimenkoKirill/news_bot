@@ -37,6 +37,9 @@ CONFIGS_DIR = Path(__file__).resolve().parent.parent / "configs"
 ENVIRONMENTS: tuple[Environment, ...] = get_args(Environment)
 DEFAULT_ENV: Environment = "dev"
 QUIET_HOURS_FORMAT = "%H:%M"
+SIMHASH_BANDS = 4
+SIMHASH_BAND_BITS = 16
+SIMHASH_MAX_DISTANCE = SIMHASH_BANDS - 1
 QUIET_HOURS_BOUNDS = 2
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
@@ -131,7 +134,19 @@ class DedupConfig(BaseModel):
 
     first_paragraph_chars: int = Field(ge=1)
     window_h: float = Field(gt=0)
-    simhash_max_distance: int = Field(ge=0, le=64)
+    simhash_max_distance: int = Field(ge=0)
+
+    @field_validator("simhash_max_distance")
+    @classmethod
+    def _check_simhash_distance(cls, value: int) -> int:
+        if value > SIMHASH_MAX_DISTANCE:
+            raise ValueError(
+                f"simhash_max_distance: не больше {SIMHASH_MAX_DISTANCE}. Похожие новости "
+                f"ищутся по индексу {SIMHASH_BANDS} частей SimHash по {SIMHASH_BAND_BITS} бит: "
+                f"при расстоянии до {SIMHASH_MAX_DISTANCE} хотя бы одна часть совпадает точно, "
+                "а при большем дубль можно не найти"
+            )
+        return value
 
 
 class PipelineConfig(BaseModel):

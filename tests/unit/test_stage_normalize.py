@@ -10,7 +10,7 @@ import pytest
 from app.config import DedupConfig, FiltersConfig
 from app.domain.enums import KeywordType, NewsStatus
 from app.domain.status import ensure_transition
-from app.pipeline.dedup import from_db, hamming
+from app.pipeline.dedup import from_db, hamming, simhash_bands
 from app.pipeline.stage_normalize import NormalizeDeps, StageReport, process_new_batch
 from tests.config_helpers import base_section, normalize_config
 
@@ -93,9 +93,18 @@ class FakeNewsRepo:
         rows = self._window(since, exclude_id)
         return next((r for r in rows if r.content_hash == content_hash), None)
 
-    async def recent_simhashes(self, since: datetime) -> list[tuple[int, int, int | None]]:
+    async def simhash_candidates(
+        self, bands: Sequence[int], since: datetime
+    ) -> list[tuple[int, int, int | None]]:
         rows = self._window(since, None)
-        return [(r.id, r.simhash, r.cluster_id) for r in rows if r.simhash is not None]
+        return [
+            (r.id, r.simhash, r.cluster_id)
+            for r in rows
+            if r.simhash is not None
+            and any(
+                mine == theirs for mine, theirs in zip(bands, simhash_bands(r.simhash), strict=True)
+            )
+        ]
 
 
 @dataclass

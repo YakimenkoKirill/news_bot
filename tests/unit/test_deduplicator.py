@@ -1,15 +1,26 @@
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
 from app.config import DedupConfig
-from app.pipeline.dedup import DedupLevel, Deduplicator, DedupResult, to_db
+from app.pipeline.dedup import (
+    DedupLevel,
+    Deduplicator,
+    DedupResult,
+    compute_simhash,
+    simhash_bands,
+    to_db,
+)
+from scripts.eval_dedup import parse_records
 from tests.config_helpers import base_section
 
 NOW = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
 CFG = DedupConfig(**{**base_section("dedup"), "simhash_max_distance": 3, "window_h": 48})
 ITEM_ID = 100
+SAMPLE = Path(__file__).resolve().parents[1] / "fixtures" / "dedup" / "sample.jsonl"
 BASE_HASH = 0b1111_0000
 
 
@@ -33,6 +44,7 @@ class Fields:
 class FakeRepo:
     items: list[Stored] = field(default_factory=list)
     calls: list[str] = field(default_factory=list)
+    band_calls: list[tuple[int, ...]] = field(default_factory=list)
 
     def _window(self, since: datetime, exclude_id: int | None) -> list[Stored]:
         return sorted(
@@ -56,12 +68,19 @@ class FakeRepo:
             (i for i in self._window(since, exclude_id) if i.content_hash == content_hash), None
         )
 
-    async def recent_simhashes(self, since: datetime) -> list[tuple[int, int, int | None]]:
+    async def simhash_candidates(
+        self, bands: Sequence[int], since: datetime
+    ) -> list[tuple[int, int, int | None]]:
+        """Отдаёт только новости с совпавшей частью SimHash — как индекс в БД."""
         self.calls.append("simhash")
+        self.band_calls.append(tuple(bands))
         return [
             (i.id, to_db(i.simhash), i.cluster_id)
             for i in self._window(since, None)
             if i.simhash is not None
+            and any(
+                mine == theirs for mine, theirs in zip(bands, simhash_bands(i.simhash), strict=True)
+            )
         ]
 
 
@@ -137,6 +156,27 @@ async def test_nearest_simhash_wins_then_earlier() -> None:
     assert (await _check(repo)).duplicate_of == 20
 
 
+async def test_candidates_requested_by_bands() -> None:
+    """В репозиторий уходят части SimHash проверяемой новости, а не всё окно."""
+    repo = FakeRepo([Stored(1, _recent(), simhash=BASE_HASH)])
+    await _check(repo)
+    assert repo.band_calls == [simhash_bands(BASE_HASH)]
+    assert repo.calls == ["url", "hash", "simhash"]
+
+
+async def test_only_candidates_with_shared_band_are_compared() -> None:
+    """Различия во всех четырёх частях: новость не попадает в кандидаты."""
+    far = BASE_HASH ^ (1 << 1) ^ (1 << 20) ^ (1 << 40) ^ (1 << 60)
+    repo = FakeRepo([Stored(5, _recent(), simhash=far)])
+    assert not (await _check(repo)).is_duplicate
+
+
+async def test_three_differences_in_different_bands_found() -> None:
+    near = BASE_HASH ^ (1 << 2) ^ (1 << 20) ^ (1 << 40)
+    repo = FakeRepo([Stored(6, _recent(), simhash=near)])
+    assert (await _check(repo)).duplicate_of == 6
+
+
 async def test_outside_window_ignored() -> None:
     fields = Fields()
     old = _recent(CFG.window_h + 1)
@@ -180,3 +220,42 @@ def test_news_repository_fits_protocol() -> None:
 
     deduplicator = Deduplicator(NewsRepository(MagicMock()), CFG)
     assert isinstance(deduplicator, Deduplicator)
+
+
+@dataclass
+class FullScanRepo(FakeRepo):
+    """Прежний поиск: отдаёт все новости окна, не глядя на части SimHash."""
+
+    async def simhash_candidates(
+        self, bands: Sequence[int], since: datetime
+    ) -> list[tuple[int, int, int | None]]:
+        self.calls.append("simhash")
+        return [
+            (i.id, to_db(i.simhash), i.cluster_id)
+            for i in self._window(since, None)
+            if i.simhash is not None
+        ]
+
+
+async def test_band_search_finds_same_duplicates_as_full_scan() -> None:
+    """На размеченном наборе поиск по частям даёт тот же итог, что перебор окна."""
+    records = parse_records(SAMPLE.read_text(encoding="utf-8").splitlines())
+    chars = CFG.first_paragraph_chars
+    hashes = [compute_simhash(record.title, record.text, chars) for record in records]
+
+    by_bands: list[DedupResult] = []
+    by_scan: list[DedupResult] = []
+    for index, (record, value) in enumerate(zip(records, hashes, strict=True), start=1):
+        stored = [
+            Stored(position, _recent(), simhash=other, content_hash=f"h{position}")
+            for position, other in enumerate(hashes[: index - 1], start=1)
+        ]
+        fields = Fields(canonical_url=f"https://example.com/{record.id}", content_hash=f"h{index}")
+        by_bands.append(await Deduplicator(FakeRepo(stored), CFG).check(index, fields, value, NOW))
+        by_scan.append(
+            await Deduplicator(FullScanRepo(stored), CFG).check(index, fields, value, NOW)
+        )
+
+    assert by_bands == by_scan
+    found = {records[index].cluster for index, result in enumerate(by_bands) if result.is_duplicate}
+    assert found == {"rate"}, "при пороге 3 находится кластер «rate», как и перебором"
