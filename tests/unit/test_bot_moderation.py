@@ -1,5 +1,5 @@
 import itertools
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -17,6 +17,7 @@ from app.db.repositories.news import StaleStatusError
 from app.domain.enums import NewsStatus
 from app.domain.status import ensure_transition
 from app.pipeline.queue_limit import AdmitOutcome, AdmitResult
+from app.pipeline.review import ReviewDeps
 from tests.bot_helpers import callback_update, make_bot, message_update
 from tests.config_helpers import base_section, bot_config
 
@@ -84,6 +85,12 @@ class NewsRepo:
         self.db.news.status = new
         self.db.news.reason = reason
 
+    async def claim_batch(
+        self, status: NewsStatus | Sequence[NewsStatus], limit: int
+    ) -> list[News]:
+        statuses = [status] if isinstance(status, NewsStatus) else list(status)
+        return [self.db.news] if self.db.news.status in statuses else []
+
 
 class PostRepo:
     def __init__(self, db: Db) -> None:
@@ -100,6 +107,9 @@ class PostRepo:
     async def set_snooze(self, post_id: int, until: datetime | None) -> bool:
         self.db.snooze = until
         return True
+
+    async def get_by_news(self, news_id: int) -> ProcessedPost | None:
+        return self.db.post if news_id == self.db.post.news_item_id else None
 
 
 class SourceRepo:
@@ -136,10 +146,16 @@ class Admission:
 
 
 class Chat:
-    def __init__(self, db: Db, admission: Admission | None = None) -> None:
+    def __init__(self, db: Db, admission: Admission | None = None, review: bool = False) -> None:
         @asynccontextmanager
         async def scope() -> AsyncIterator[Db]:
             yield db
+
+        review_deps = (
+            ReviewDeps(session_scope=scope, news_repo=NewsRepo, post_repo=PostRepo)
+            if review
+            else None
+        )
 
         class NoAdmins:
             async def is_admin(self, telegram_id: int) -> bool:
@@ -159,6 +175,7 @@ class Chat:
                     snooze_min=SNOOZE,
                     clock=lambda: NOW,
                     admission=admission,  # type: ignore[arg-type]
+                    review=review_deps,
                 )
             },
         )
@@ -200,6 +217,42 @@ async def test_reject() -> None:
     assert db.news.status is NewsStatus.REJECTED
     assert db.news.reason == "rejected_by_moderator"
     assert texts.REVIEW_DECISIONS["reject"] in (chat.edits()[0].text or "")
+
+
+async def test_reject_through_review_module() -> None:
+    """Через ReviewDeps отмена даёт тот же текст и статус, что и раньше."""
+    db = Db()
+    chat = Chat(db, review=True)
+    await chat.press(ReviewActionType.REJECT)
+    assert db.news.status is NewsStatus.REJECTED
+    assert db.news.reason == "rejected_by_moderator"
+    assert texts.REVIEW_DECISIONS["reject"] in (chat.edits()[0].text or "")
+
+
+async def test_reject_through_review_clears_snooze() -> None:
+    """Отложенный «Позже» пост после отмены не вернётся на модерацию."""
+    db = Db(snooze=NOW + timedelta(minutes=SNOOZE))
+    chat = Chat(db, review=True)
+    await chat.press(ReviewActionType.REJECT)
+    assert db.snooze is None
+
+
+async def test_reject_through_review_when_already_decided() -> None:
+    db = Db()
+    chat = Chat(db, review=True)
+    await chat.press(ReviewActionType.PUBLISH)
+    await chat.press(ReviewActionType.REJECT)
+    assert db.news.status is NewsStatus.APPROVED
+    assert chat.answers()[-1].text == texts.REVIEW_ALREADY_DONE.format(status="approved")
+
+
+async def test_publish_through_review_deps_unchanged() -> None:
+    """ReviewDeps не влияет на одобрение: оно идёт прежним путём."""
+    db = Db()
+    chat = Chat(db, review=True)
+    await chat.press(ReviewActionType.PUBLISH)
+    assert db.news.status is NewsStatus.APPROVED
+    assert texts.REVIEW_DECISIONS["publish"] in (chat.edits()[0].text or "")
 
 
 async def test_later_snoozes() -> None:

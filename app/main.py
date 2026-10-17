@@ -73,6 +73,7 @@ from app.pipeline.ai.client import DeepSeekClient
 from app.pipeline.ai.processor import AiProcessor, AiRepos
 from app.pipeline.queue_limit import QueueAdmission, QueueLimitRepos, trim_queue
 from app.pipeline.retry import RetryDeps
+from app.pipeline.review import ReviewDeps
 from app.pipeline.stage_ai import AiStageDeps, process_normalized_batch
 from app.pipeline.stage_normalize import NormalizeDeps, process_new_batch
 from app.publisher.media import ImageCheck, PhotoSource, TelegramPhotoFetcher, check_image
@@ -312,6 +313,11 @@ def build_components(settings: Settings) -> list[Component]:
         dedup=settings.dedup,
         batch_size=settings.pipeline.batch_size,
     )
+    review_deps = ReviewDeps(
+        session_scope=scope,
+        news_repo=NewsRepository,
+        post_repo=ProcessedPostRepository,
+    )
     admission = QueueAdmission(
         news_repo=NewsRepository,
         source_repo=SourceRepository,
@@ -541,6 +547,7 @@ def build_components(settings: Settings) -> list[Component]:
                     cfg=settings.publisher,
                     snooze_min=settings.moderation.snooze_min,
                     admission=admission,
+                    review=review_deps,
                 ),
                 "queue_deps": QueueDeps(
                     session_scope=scope,

@@ -22,12 +22,12 @@ from app.db.models import ProcessedPost
 from app.db.repositories.news import StaleStatusError
 from app.domain.enums import NewsStatus
 from app.pipeline.queue_limit import QueueAdmission
+from app.pipeline.review import REJECT_REASON as REJECT_REASON  # прежние ссылки на константу
+from app.pipeline.review import CancelOutcome, ReviewDeps, cancel_review
 from app.publisher.formatter import PostNews, PostSource, build_post
 from app.publisher.limits import summary_budget, utf16_len
 
 log = structlog.get_logger(__name__)
-
-REJECT_REASON = "rejected_by_moderator"
 
 
 class ModeratedNews(PostNews, Protocol):
@@ -85,6 +85,7 @@ class ModerationDeps:
     cfg: PublisherConfig
     snooze_min: float
     admission: QueueAdmission | None = None
+    review: ReviewDeps | None = None
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
 
 
@@ -138,6 +139,13 @@ async def on_review(
         async with deps.session_scope() as session:
             await deps.post_repo(session).set_snooze(post.id, until)
         decision = texts.REVIEW_DECISIONS["later"].format(minutes=int(deps.snooze_min))
+    elif action is ReviewActionType.REJECT and deps.review is not None:
+        result = await cancel_review(news.id, user_id or 0, deps.review)
+        if result.outcome is not CancelOutcome.CANCELLED:
+            status = result.status.value if result.status else "неизвестно"
+            await callback.answer(texts.REVIEW_ALREADY_DONE.format(status=status), show_alert=True)
+            return
+        decision = texts.REVIEW_DECISIONS[action.value]
     else:
         new = NewsStatus.APPROVED if action is ReviewActionType.PUBLISH else NewsStatus.REJECTED
         reason = REJECT_REASON if new is NewsStatus.REJECTED else None
