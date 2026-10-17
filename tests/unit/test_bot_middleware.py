@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -25,10 +26,10 @@ from app.bot.keyboards import (
 )
 from app.bot.middlewares import AdminOnlyMiddleware
 from app.bot.screen import ScreenUpdateMiddleware
-from app.config import CONFIGS_DIR, Settings, UiConfig, load_settings
+from app.config import Settings, UiConfig, load_settings
 from app.logging import setup_logging
 from tests.bot_helpers import FakeSession, callback_update, make_bot, message_update
-from tests.config_helpers import base_section, bot_config
+from tests.config_helpers import base_section, bot_config, configs_copy
 from tests.unit.test_bot_queue import Db, _deps
 from tests.unit.test_bot_report import Builder
 from tests.unit.test_bot_report import _deps as report_deps
@@ -309,10 +310,12 @@ async def test_stranger_message_not_deleted(monkeypatch: pytest.MonkeyPatch) -> 
     assert not [r for r in session.requests if isinstance(r, DeleteMessage)]
 
 
-async def _feed_settings(update: Update) -> FakeSession:
+async def _feed_settings(
+    update: Update, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> FakeSession:
     from tests.unit.test_bot_settings import FakeRuntime
 
-    app_settings = load_settings(CONFIGS_DIR, "dev")
+    app_settings = load_settings(configs_copy(tmp_path, monkeypatch), "dev")
     deps = BotDeps(
         settings=Settings.model_construct(
             telegram_admin_ids=[SETTINGS_ADMIN], bot=bot_config(refusal_cooldown_s=COOLDOWN)
@@ -332,19 +335,27 @@ def _settings_callback(user_id: int) -> Update:
     return callback_update(user_id, SettingsAction(action=ST_EDIT, key="score").pack())
 
 
-async def test_stranger_refused_on_settings_command() -> None:
-    session = await _feed_settings(message_update(STRANGER, "/settings"))
+async def test_stranger_refused_on_settings_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = await _feed_settings(message_update(STRANGER, "/settings"), tmp_path, monkeypatch)
     assert session.sent_texts() == [texts.ACCESS_DENIED]
 
 
-async def test_stranger_refused_on_settings_callback() -> None:
-    session = await _feed_settings(_settings_callback(STRANGER))
+async def test_stranger_refused_on_settings_callback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = await _feed_settings(_settings_callback(STRANGER), tmp_path, monkeypatch)
     answers = [r for r in session.requests if isinstance(r, AnswerCallbackQuery)]
     assert [(a.text, a.show_alert) for a in answers] == [(texts.ACCESS_DENIED, True)]
     assert not [r for r in session.requests if not isinstance(r, AnswerCallbackQuery)]
 
 
-async def test_admin_settings_command_passes() -> None:
-    session = await _feed_settings(message_update(SETTINGS_ADMIN, "/settings"))
+async def test_admin_settings_command_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = await _feed_settings(
+        message_update(SETTINGS_ADMIN, "/settings"), tmp_path, monkeypatch
+    )
     [text] = session.sent_texts()
     assert texts.SETTINGS_TITLE in text
