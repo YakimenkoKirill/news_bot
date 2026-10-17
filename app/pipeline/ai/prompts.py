@@ -7,7 +7,7 @@ from typing import Protocol
 
 from app.config import ChannelProfile
 
-PROMPT_VERSION = "v4"
+PROMPT_VERSION = "v5"
 LEGACY_PROMPT_VERSION = "v3"
 MAX_QUOTE_WORDS = 15
 ELLIPSIS = "…"
@@ -29,12 +29,16 @@ __all__ = [
 ]
 
 
+UNKNOWN_LANGUAGE = "не определён"
+
+
 class PromptNews(Protocol):
     """Поля новости для промпта (NewsItem подходит структурно)."""
 
     title: str
     clean_text: str | None
     raw_text: str
+    language: str | None
     published_at: datetime | None
 
 
@@ -56,6 +60,14 @@ def _hashtags_rule(profile: ChannelProfile) -> str:
     if profile.hashtags_max == 0:
         return '- "hashtags": пустой список, хэштеги в канале не используются;\n'
     return f'- "hashtags": список не больше чем из {profile.hashtags_max} хэштегов;\n'
+
+
+def _translation_rule(profile: ChannelProfile) -> str:
+    return (
+        f"- Если язык источника отличается от языка канала («{profile.language}») — "
+        "перескажи на языке канала; имена собственные и названия компаний передавай "
+        "общепринятым написанием на языке канала, при сомнении — в оригинале в скобках.\n"
+    )
 
 
 def _relevance_rules() -> str:
@@ -87,7 +99,8 @@ def _summary_system_message(profile: ChannelProfile) -> str:
         "- Не добавляй факты, цифры, имена и даты, которых нет в источнике.\n"
         f"- Не цитируй источник дословно фрагментами длиннее {MAX_QUOTE_WORDS} слов.\n"
         "- Не используй кликбейт, эмодзи и призывы подписаться.\n"
-        "Ответь ровно одним JSON-объектом с ключами "
+        + _translation_rule(profile)
+        + "Ответь ровно одним JSON-объектом с ключами "
         f"{', '.join(RESPONSE_KEYS)} и без других ключей:\n"
         f'- "title": заголовок не длиннее {profile.max_title_chars} символов;\n'
         f'- "summary": пересказ не длиннее {profile.max_summary_chars} символов;\n'
@@ -107,8 +120,9 @@ def _legacy_system_message(profile: ChannelProfile) -> str:
         "- Не добавляй факты, цифры, имена и даты, которых нет в источнике.\n"
         f"- Не цитируй источник дословно фрагментами длиннее {MAX_QUOTE_WORDS} слов.\n"
         "- Не используй кликбейт, эмодзи и призывы подписаться.\n"
-        "Ответь ровно одним JSON-объектом с ключами "
-        f"{', '.join(LEGACY_RESPONSE_KEYS)} и без других ключей:\n"
+        + _translation_rule(profile)
+        + "Ответь ровно одним JSON-объектом с ключами "
+        + f"{', '.join(LEGACY_RESPONSE_KEYS)} и без других ключей:\n"
         + _relevance_rules()
         + f'- "title": заголовок не длиннее {profile.max_title_chars} символов;\n'
         + f'- "summary": пересказ не длиннее {profile.max_summary_chars} символов;\n'
@@ -118,11 +132,14 @@ def _legacy_system_message(profile: ChannelProfile) -> str:
 
 
 def _user_message(news: PromptNews, max_chars: int, with_date: bool) -> str:
+    """Пользовательское сообщение: заголовок, язык источника, дата и текст."""
     text = truncate_words(news.clean_text or news.raw_text, max_chars)
+    language = news.language or UNKNOWN_LANGUAGE
+    head = f"Заголовок: {news.title}\nЯзык источника: {language}"
     if not with_date:
-        return f"Заголовок: {news.title}\nТекст:\n{text}"
+        return f"{head}\nТекст:\n{text}"
     published = news.published_at.isoformat() if news.published_at else "не указана"
-    return f"Заголовок: {news.title}\nДата публикации: {published}\nТекст:\n{text}"
+    return f"{head}\nДата публикации: {published}\nТекст:\n{text}"
 
 
 def build_screen_messages(

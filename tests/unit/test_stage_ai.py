@@ -28,6 +28,7 @@ class News:
     url: str = "https://e.com/1"
     clean_text: str | None = "text"
     raw_text: str = "text"
+    language: str | None = "ru"
     published_at: datetime | None = None
     status: NewsStatus = NewsStatus.NORMALIZED
 

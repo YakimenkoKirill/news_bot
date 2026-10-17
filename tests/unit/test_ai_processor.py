@@ -41,6 +41,7 @@ class News:
     url: str = "https://news.example/1"
     clean_text: str | None = SOURCE_TEXT
     raw_text: str = SOURCE_TEXT
+    language: str | None = "ru"
     published_at: datetime | None = datetime(2026, 10, 10, 9, 0, tzinfo=UTC)
 
 
@@ -418,6 +419,76 @@ async def test_second_bad_response_fails() -> None:
     assert news.history == [NewsStatus.FAILED]
     assert posts.posts == []
     assert len(client.calls) == 2
+
+
+async def _run_foreign(
+    cfg: AiConfig,
+    language: str = "en",
+    summary: str = "Nvidia представила процессор, который на 30% быстрее прошлой модели.",
+    mode: ModerationMode = ModerationMode.AUTO,
+) -> tuple[NewsStatus, FakePostRepo]:
+    news_repo, post_repo = FakeNewsRepo(), FakePostRepo()
+    outcomes: list[AiRawResponse | Exception] = (
+        [_screen(), _summary(summary=summary)] if cfg.two_stage else [_answer(summary=summary)]
+    )
+    processor = AiProcessor(FakeClient(outcomes), PROFILE, _repos(news_repo, post_repo), cfg)
+    status = await processor.process(News(language=language), Source(mode))
+    return status, post_repo
+
+
+async def test_foreign_news_goes_to_review() -> None:
+    """Перевод сначала смотрит человек, даже если источник работает автоматически."""
+    status, posts = await _run_foreign(CFG)
+    assert status is NewsStatus.PENDING_REVIEW
+    assert posts.posts[0].review_note is not None
+    assert "перевод из en" in posts.posts[0].review_note
+
+
+async def test_foreign_news_without_review_follows_source_mode() -> None:
+    """review_foreign = false: перевод идёт по режиму источника, пометка остаётся."""
+    cfg = CFG.model_copy(update={"review_foreign": False})
+    status, posts = await _run_foreign(cfg)
+    assert status is NewsStatus.APPROVED
+    assert posts.posts[0].review_note == "перевод из en: имена не проверены автоматически"
+
+
+async def test_foreign_news_note_lists_numbers_too() -> None:
+    cfg = CFG.model_copy(update={"review_foreign": False})
+    status, posts = await _run_foreign(cfg, summary="Процессор быстрее на 45%.")
+    assert status is NewsStatus.PENDING_REVIEW
+    note = posts.posts[0].review_note
+    assert note is not None
+    assert "45%" in note
+    assert "перевод из en" in note
+
+
+async def test_foreign_names_not_flagged() -> None:
+    """Имена в переводе не сверяются по началу слова: иначе одни ложные замечания."""
+    cfg = CFG.model_copy(update={"review_foreign": False})
+    status, posts = await _run_foreign(
+        cfg, summary="Дженсен Хуанг показал процессор, который на 30% быстрее прошлой модели."
+    )
+    assert status is NewsStatus.APPROVED
+    note = posts.posts[0].review_note
+    assert note is not None
+    assert "Не найдены в источнике" not in note
+
+
+async def test_russian_news_behaviour_unchanged() -> None:
+    status, posts = await _run_foreign(CFG, language="ru")
+    assert status is NewsStatus.APPROVED
+    assert posts.posts[0].review_note is None
+
+
+async def test_unknown_language_treated_as_channel_language() -> None:
+    status, _ = await _run_foreign(CFG, language="")
+    assert status is NewsStatus.APPROVED
+
+
+async def test_foreign_news_in_single_request_mode_goes_to_review() -> None:
+    status, posts = await _run_foreign(LEGACY_CFG)
+    assert status is NewsStatus.PENDING_REVIEW
+    assert posts.posts[0].review_note is not None
 
 
 async def _run_with_requests(

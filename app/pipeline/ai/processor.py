@@ -15,7 +15,7 @@ from app.db.models import AiRequest, ProcessedPost
 from app.domain.enums import ModerationMode, NewsStatus
 from app.pipeline.ai.budget import cost
 from app.pipeline.ai.client import AiRawResponse, AiResponseError, Message
-from app.pipeline.ai.factcheck import unsupported_facts
+from app.pipeline.ai.factcheck import FOREIGN_NOTE, is_foreign, unsupported_facts
 from app.pipeline.ai.prompts import (
     LEGACY_PROMPT_VERSION,
     PROMPT_VERSION,
@@ -71,6 +71,7 @@ class ProcessableNews(Protocol):
     url: str
     clean_text: str | None
     raw_text: str
+    language: str | None
     published_at: datetime | None
 
 
@@ -310,11 +311,24 @@ class AiProcessor:
         """Сохраняет пересказ с проверкой фактов и переводит новость в итоговый статус.
 
         Пересказ сохраняется и для новости, которую отсеяла оценка в том же ответе
-        (ai.two_stage = false): он уже оплачен, и его видно в отчёте.
+        (ai.two_stage = false): он уже оплачен, и его видно в отчёте. У перевода
+        проверяются только числа, и в замечание добавляется пометка об этом.
         """
         source_text = f"{news.title}\n{news.clean_text or news.raw_text}"
-        facts = unsupported_facts(source_text, f"{summary.title}\n{summary.summary}")
-        review_note = f"Не найдены в источнике: {', '.join(facts)}" if facts else None
+        channel_lang = self._profile.language
+        foreign = is_foreign(news.language, channel_lang)
+        facts = unsupported_facts(
+            source_text,
+            f"{summary.title}\n{summary.summary}",
+            source_lang=news.language,
+            channel_lang=channel_lang,
+        )
+        notes: list[str] = []
+        if facts:
+            notes.append(f"Не найдены в источнике: {', '.join(facts)}")
+        if foreign:
+            notes.append(FOREIGN_NOTE.format(lang=news.language))
+        review_note = "; ".join(notes) if notes else None
         await self._repos.posts.add(
             ProcessedPost(
                 news_item_id=news.id,
@@ -332,7 +346,14 @@ class AiProcessor:
         )
         if relevance is not None and not self._is_relevant(relevance):
             return await self._filter_out(news.id, relevance)
-        return await self._finish(news.id, news.source_id, review_note, source)
+        return await self._finish(
+            news.id,
+            news.source_id,
+            review_note,
+            source,
+            flagged=bool(facts),
+            foreign=foreign,
+        )
 
     async def _record(self, news_id: int, raw: AiRawResponse, kind: str, *, ok: bool) -> Decimal:
         """Записывает один запрос к модели и возвращает его стоимость.
@@ -367,12 +388,38 @@ class AiProcessor:
         source_id: int,
         review_note: str | None,
         source: ModeratedSource,
+        *,
+        flagged: bool = False,
+        foreign: bool = False,
     ) -> NewsStatus:
+        """Доводит новость до итогового статуса.
+
+        На модерацию уходят посты с неподтверждёнными фактами, посты источников
+        с режимом review и — при ai.review_foreign — переводы: качество перевода
+        сначала смотрит человек. Пометка о переводе сама по себе на модерацию не
+        отправляет: при review_foreign = false перевод идёт по режиму источника.
+
+        Args:
+            news_id: Новость.
+            source_id: Её источник.
+            review_note: Замечание для администратора (может быть и у approved).
+            source: Источник (режим модерации).
+            flagged: Есть ли неподтверждённые факты.
+            foreign: Пересказ — перевод с другого языка.
+
+        Returns:
+            Итоговый статус новости.
+        """
         news_repo = self._repos.news
         await news_repo.set_status(news_id, NewsStatus.NORMALIZED, NewsStatus.PROCESSED)
-        if review_note is not None or source.moderation_mode is ModerationMode.REVIEW:
+        to_review = (
+            flagged
+            or source.moderation_mode is ModerationMode.REVIEW
+            or (foreign and self._cfg.review_foreign)
+        )
+        if to_review:
             await news_repo.set_status(news_id, NewsStatus.PROCESSED, NewsStatus.PENDING_REVIEW)
-            log.info("ai.pending_review", review_note=review_note)
+            log.info("ai.pending_review", review_note=review_note, foreign=foreign)
             return NewsStatus.PENDING_REVIEW
         if self._repos.admit is None:
             await news_repo.set_status(news_id, NewsStatus.PROCESSED, NewsStatus.APPROVED)

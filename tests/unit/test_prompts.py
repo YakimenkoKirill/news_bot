@@ -31,6 +31,7 @@ class News:
     url: str = "https://www.space.example/news/42"
     clean_text: str | None = SECRET_TEXT
     raw_text: str = "<p>сырой</p>"
+    language: str | None = "ru"
     published_at: datetime | None = datetime(2026, 10, 10, 9, 30, tzinfo=UTC)
 
 
@@ -47,7 +48,7 @@ def _screen_messages(
 def test_version_is_string() -> None:
     assert isinstance(PROMPT_VERSION, str)
     assert PROMPT_VERSION
-    assert PROMPT_VERSION == "v4"
+    assert PROMPT_VERSION == "v5"
     assert LEGACY_PROMPT_VERSION == "v3"
 
 
@@ -143,6 +144,43 @@ def test_system_contains_profile_rules_and_keys() -> None:
     assert "Не добавляй факты" in system
     assert "15 слов" in system
     assert "JSON" in system
+
+
+def test_user_message_has_source_language() -> None:
+    user = _messages()[1]["content"]
+    assert "Язык источника: ru" in user
+    screen = _screen_messages()[1]["content"]
+    assert "Язык источника: ru" in screen
+
+
+def test_foreign_language_passed_as_is() -> None:
+    user = _messages(News(language="en"))[1]["content"]
+    assert "Язык источника: en" in user
+
+
+def test_unknown_language_marked() -> None:
+    """Язык не определён — модель узнаёт об этом явно."""
+    user = _messages(News(language=None))[1]["content"]
+    assert "Язык источника: не определён" in user
+
+
+def test_translation_rule_in_summary_prompt() -> None:
+    system = _messages()[0]["content"]
+    assert "Если язык источника отличается от языка канала" in system
+    assert PROFILE.language in system
+    assert "в оригинале в скобках" in system
+
+
+def test_translation_rule_in_legacy_prompt() -> None:
+    system = build_legacy_messages(News(), PROFILE, MAX_INPUT)[0]["content"]
+    assert "Если язык источника отличается от языка канала" in system
+
+
+def test_screen_prompt_has_no_translation_rule() -> None:
+    """Отбор только оценивает тему: пересказывать и переводить его не просят."""
+    system = _screen_messages()[0]["content"]
+    assert "в оригинале в скобках" not in system
+    assert "перескажи" not in system.lower()
 
 
 def test_missing_date_and_raw_text_fallback() -> None:

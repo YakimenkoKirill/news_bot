@@ -291,6 +291,20 @@ def test_ui_unknown_key_rejected(configs_dir: Path) -> None:
         load_settings(configs_dir, "prod")
 
 
+def test_review_foreign_default(configs_dir: Path) -> None:
+    assert load_settings(configs_dir).ai.review_foreign is True
+
+
+def test_review_foreign_can_be_disabled(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text("ai:\n  review_foreign: false\n", encoding="utf-8")
+    assert load_settings(configs_dir, "prod").ai.review_foreign is False
+
+
+def test_allowed_languages_untouched(configs_dir: Path) -> None:
+    """Значение задаёт человек: по умолчанию в канал идут только русские новости."""
+    assert load_settings(configs_dir).filters.allowed_languages == ["ru"]
+
+
 def test_stats_section(configs_dir: Path) -> None:
     settings = load_settings(configs_dir)
     assert settings.stats.delay_h == 24
