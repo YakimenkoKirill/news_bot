@@ -154,6 +154,9 @@ class AiConfig(BaseModel):
     max_retries: int = Field(ge=0)
     max_input_chars: int = Field(ge=1)
     max_output_tokens: int = Field(ge=1)
+    two_stage: bool
+    screen_input_chars: int = Field(ge=1)
+    screen_max_tokens: int = Field(ge=1)
     price_input_per_1m: Decimal = Field(ge=0)
     price_input_cached_per_1m: float | None = Field(default=None, ge=0)
     price_output_per_1m: Decimal = Field(ge=0)

@@ -6,16 +6,22 @@ import pytest
 from pydantic import ValidationError
 
 from app.pipeline.ai.prompts import (
+    LEGACY_PROMPT_VERSION,
+    LEGACY_RESPONSE_KEYS,
     PROMPT_VERSION,
     RESPONSE_KEYS,
+    SCREEN_RESPONSE_KEYS,
     ChannelProfile,
+    build_legacy_messages,
     build_messages,
+    build_screen_messages,
     truncate_words,
 )
 from tests.config_helpers import base_section
 
 PROFILE = ChannelProfile(**base_section("channel"))
 MAX_INPUT = base_section("ai")["max_input_chars"]
+SCREEN_INPUT = base_section("ai")["screen_input_chars"]
 SECRET_TEXT = "УНИКАЛЬНЫЙ-ТЕКСТ-НОВОСТИ про запуск спутника"
 
 
@@ -32,9 +38,84 @@ def _messages(news: News | None = None, max_input: int = MAX_INPUT) -> list[dict
     return build_messages(news or News(), PROFILE, max_input)
 
 
+def _screen_messages(
+    news: News | None = None, max_chars: int = SCREEN_INPUT
+) -> list[dict[str, str]]:
+    return build_screen_messages(news or News(), PROFILE, max_chars)
+
+
 def test_version_is_string() -> None:
     assert isinstance(PROMPT_VERSION, str)
     assert PROMPT_VERSION
+    assert PROMPT_VERSION == "v4"
+    assert LEGACY_PROMPT_VERSION == "v3"
+
+
+def test_summary_prompt_without_relevance_keys() -> None:
+    """Оценку даёт отбор: промпт пересказа про неё не спрашивает."""
+    assert RESPONSE_KEYS == ("title", "summary", "hashtags", "category")
+    system = _messages()[0]["content"]
+    for key in SCREEN_RESPONSE_KEYS:
+        assert f'"{key}"' not in system
+    assert "Оцени" not in system
+
+
+def test_screen_prompt_asks_only_for_relevance() -> None:
+    messages = _screen_messages()
+    assert [m["role"] for m in messages] == ["system", "user"]
+    system, user = messages[0]["content"], messages[1]["content"]
+    assert SCREEN_RESPONSE_KEYS == ("relevant", "score")
+    for key in SCREEN_RESPONSE_KEYS:
+        assert f'"{key}"' in system
+    for key in RESPONSE_KEYS:
+        assert f'"{key}"' not in system
+    assert PROFILE.topic in system
+    assert "JSON" in system
+    assert "Пересказывать новость не нужно" in system
+    assert SECRET_TEXT in user
+    assert "Заголовок: Запуск спутника перенесли" in user
+
+
+def test_screen_system_message_has_no_changing_data() -> None:
+    """Системное сообщение отбора одинаково для всех новостей — работает кэш."""
+    first = _screen_messages()[0]["content"]
+    second = _screen_messages(
+        News(title="Другая новость", clean_text="другой текст", published_at=None)
+    )[0]["content"]
+    assert first == second
+    assert "2026" not in first
+    assert "Дата" not in first
+
+
+def test_screen_user_message_has_no_date() -> None:
+    user = _screen_messages()[1]["content"]
+    assert "Дата публикации" not in user
+
+
+def test_screen_text_truncated_to_screen_input_chars() -> None:
+    long_text = "слово " * 2000
+    user = _screen_messages(News(clean_text=long_text), max_chars=80)[1]["content"]
+    text_part = user.split("Текст:\n", 1)[1]
+    assert len(text_part) <= 80
+    assert text_part.endswith("…")
+
+
+def test_screen_text_uses_raw_text_fallback() -> None:
+    user = _screen_messages(News(clean_text=None))[1]["content"]
+    assert "<p>сырой</p>" in user
+
+
+def test_legacy_prompt_keeps_all_keys() -> None:
+    system = build_legacy_messages(News(), PROFILE, MAX_INPUT)[0]["content"]
+    assert (*SCREEN_RESPONSE_KEYS, *RESPONSE_KEYS) == LEGACY_RESPONSE_KEYS
+    for key in LEGACY_RESPONSE_KEYS:
+        assert f'"{key}"' in system
+    assert "Оцени" in system
+    assert "Дата публикации" in build_legacy_messages(News(), PROFILE, MAX_INPUT)[1]["content"]
+
+
+def test_screen_messages_are_json_serializable() -> None:
+    assert json.loads(json.dumps(_screen_messages())) == _screen_messages()
 
 
 def test_system_and_user_split() -> None:

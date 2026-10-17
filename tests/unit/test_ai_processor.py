@@ -11,7 +11,7 @@ from app.config import AiConfig, ChannelProfile
 from app.db.models import AiRequest, ProcessedPost
 from app.domain.enums import ModerationMode, NewsStatus
 from app.domain.status import ensure_transition
-from app.pipeline.ai.budget import cost
+from app.pipeline.ai.budget import BudgetExceeded, cost
 from app.pipeline.ai.client import (
     AiFatalError,
     AiRawResponse,
@@ -20,11 +20,12 @@ from app.pipeline.ai.client import (
     Message,
 )
 from app.pipeline.ai.processor import AiProcessor, AiRepos
-from app.pipeline.ai.prompts import PROMPT_VERSION
+from app.pipeline.ai.prompts import LEGACY_PROMPT_VERSION, PROMPT_VERSION
 from app.pipeline.queue_limit import AdmitOutcome, AdmitResult
 from tests.config_helpers import base_section
 
 CFG = AiConfig(**{**base_section("ai"), "min_score": 0.5})
+LEGACY_CFG = CFG.model_copy(update={"two_stage": False})
 PROFILE = ChannelProfile(**{**base_section("channel"), "hashtags_max": 2})
 SOURCE_TEXT = (
     "Компания Nvidia представила новый процессор. По данным компании, он на 30% быстрее "
@@ -87,9 +88,13 @@ class FakeClient:
     def __init__(self, outcomes: list[AiRawResponse | Exception]) -> None:
         self.outcomes: list[AiRawResponse | Exception] = list(outcomes)
         self.calls: list[list[Message]] = []
+        self.limits: list[int | None] = []
 
-    async def chat_json(self, messages: list[Message]) -> AiRawResponse:
+    async def chat_json(
+        self, messages: list[Message], *, max_tokens: int | None = None
+    ) -> AiRawResponse:
         self.calls.append(messages)
+        self.limits.append(max_tokens)
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
@@ -97,9 +102,29 @@ class FakeClient:
 
 
 def _answer(**overrides: Any) -> AiRawResponse:
+    """Ответ промпта v3: оценка и пересказ вместе (ai.two_stage = false)."""
     data: dict[str, Any] = {
         "relevant": True,
         "score": 0.8,
+        "title": "Nvidia показала новый процессор",
+        "summary": "Nvidia представила процессор, который на 30% быстрее прошлой модели.",
+        "hashtags": ["железо"],
+        "category": "технологии",
+    }
+    data.update(overrides)
+    return AiRawResponse(json.dumps(data, ensure_ascii=False), 1000, 200)
+
+
+def _screen(relevant: bool = True, score: float = 0.8, **overrides: Any) -> AiRawResponse:
+    """Ответ отбора: только relevant и score."""
+    data: dict[str, Any] = {"relevant": relevant, "score": score}
+    data.update(overrides)
+    return AiRawResponse(json.dumps(data, ensure_ascii=False), 300, 20)
+
+
+def _summary(**overrides: Any) -> AiRawResponse:
+    """Ответ пересказа промпта v4: без relevant и score."""
+    data: dict[str, Any] = {
         "title": "Nvidia показала новый процессор",
         "summary": "Nvidia представила процессор, который на 30% быстрее прошлой модели.",
         "hashtags": ["железо"],
@@ -113,7 +138,7 @@ async def _run(
     outcomes: list[Any], mode: ModerationMode = ModerationMode.AUTO
 ) -> tuple[NewsStatus, FakeNewsRepo, FakePostRepo, FakeClient]:
     news_repo, post_repo, client = FakeNewsRepo(), FakePostRepo(), FakeClient(outcomes)
-    processor = AiProcessor(client, PROFILE, _repos(news_repo, post_repo), CFG)
+    processor = AiProcessor(client, PROFILE, _repos(news_repo, post_repo), LEGACY_CFG)
     status = await processor.process(News(), Source(mode))
     return status, news_repo, post_repo, client
 
@@ -129,6 +154,179 @@ def _repos(
     )
 
 
+async def _run_two_stage(
+    outcomes: list[Any],
+    mode: ModerationMode = ModerationMode.AUTO,
+    budget: Any = None,
+) -> tuple[NewsStatus, FakeNewsRepo, FakePostRepo, FakeRequestRepo, FakeClient]:
+    news_repo, post_repo = FakeNewsRepo(), FakePostRepo()
+    requests, client = FakeRequestRepo(), FakeClient(outcomes)
+    processor = AiProcessor(
+        client, PROFILE, _repos(news_repo, post_repo, requests), CFG, budget=budget
+    )
+    status = await processor.process(News(), Source(mode))
+    return status, news_repo, post_repo, requests, client
+
+
+async def test_two_stage_not_relevant_costs_one_request() -> None:
+    """Новость не по теме: пересказ не запрашивается и пост не создаётся."""
+    status, news, posts, requests, client = await _run_two_stage([_screen(relevant=False)])
+    assert status is NewsStatus.FILTERED
+    assert news.reason == "not_relevant"
+    assert posts.posts == []
+    assert len(client.calls) == 1
+    assert client.limits == [CFG.screen_max_tokens]
+    [request] = requests.requests
+    assert (request.kind, request.ok) == ("screen", True)
+
+
+async def test_two_stage_low_score_costs_one_request() -> None:
+    status, news, posts, _, client = await _run_two_stage([_screen(score=0.49)])
+    assert status is NewsStatus.FILTERED
+    assert news.reason == "not_relevant"
+    assert posts.posts == []
+    assert len(client.calls) == 1
+
+
+async def test_two_stage_score_at_threshold_passes() -> None:
+    status, _, posts, _, client = await _run_two_stage([_screen(score=CFG.min_score), _summary()])
+    assert status is NewsStatus.APPROVED
+    assert posts.posts[0].relevance_score == CFG.min_score
+    assert len(client.calls) == 2
+
+
+async def test_two_stage_relevant_makes_two_requests() -> None:
+    status, news, posts, requests, client = await _run_two_stage([_screen(score=0.9), _summary()])
+    assert status is NewsStatus.APPROVED
+    assert news.history == [NewsStatus.PROCESSED, NewsStatus.APPROVED]
+    [post] = posts.posts
+    assert post.prompt_version == PROMPT_VERSION
+    assert post.relevance_score == 0.9, "оценка берётся из отбора"
+    assert post.ai_title == "Nvidia показала новый процессор"
+    assert (post.prompt_tokens, post.completion_tokens) == (1300, 220)
+    assert post.cost == cost(300, 0, 20, CFG) + cost(1000, 0, 200, CFG)
+    assert [r.kind for r in requests.requests] == ["screen", "summary"]
+    assert client.limits == [CFG.screen_max_tokens, None]
+
+
+async def test_two_stage_screen_prompt_has_no_summary_rules() -> None:
+    _, _, _, _, client = await _run_two_stage([_screen(), _summary()])
+    screen_messages, summary_messages = client.calls
+    assert "Пересказывать новость не нужно" in screen_messages[0]["content"]
+    assert "summary" not in screen_messages[0]["content"]
+    assert "Дата публикации" not in screen_messages[1]["content"]
+    assert '"relevant"' not in summary_messages[0]["content"]
+
+
+async def test_two_stage_bad_screen_response_retried() -> None:
+    status, _, posts, requests, client = await _run_two_stage(
+        [AiRawResponse("не json", 300, 20), _screen(), _summary()]
+    )
+    assert status is NewsStatus.APPROVED
+    assert len(client.calls) == 3
+    assert [(r.kind, r.ok) for r in requests.requests] == [
+        ("screen", False),
+        ("screen", True),
+        ("summary", True),
+    ]
+    assert posts.posts[0].cost == sum(r.cost for r in requests.requests)
+
+
+async def test_two_stage_two_bad_screen_responses_fail() -> None:
+    status, news, posts, requests, client = await _run_two_stage(
+        [AiRawResponse("не json", 300, 20), AiRawResponse("{}", 300, 20)]
+    )
+    assert status is NewsStatus.FAILED
+    assert news.reason == "bad_ai_response"
+    assert posts.posts == []
+    assert len(client.calls) == 2
+    assert [r.kind for r in requests.requests] == ["screen", "screen"]
+    assert all(r.ok is False for r in requests.requests)
+
+
+async def test_two_stage_screen_response_with_extra_keys_is_bad() -> None:
+    """Отбор не должен возвращать пересказ: лишние ключи — плохой ответ."""
+    status, _, _, requests, _ = await _run_two_stage([_answer(), _answer()])
+    assert status is NewsStatus.FAILED
+    assert [r.ok for r in requests.requests] == [False, False]
+
+
+async def test_two_stage_bad_summary_response_retried() -> None:
+    status, _, posts, requests, client = await _run_two_stage(
+        [_screen(), AiRawResponse("{}", 1000, 200), _summary()]
+    )
+    assert status is NewsStatus.APPROVED
+    assert len(client.calls) == 3
+    assert [(r.kind, r.ok) for r in requests.requests] == [
+        ("screen", True),
+        ("summary", False),
+        ("summary", True),
+    ]
+    assert posts.posts[0].cost == sum(r.cost for r in requests.requests)
+
+
+async def test_two_stage_two_bad_summary_responses_fail() -> None:
+    """Отбор прошёл, пересказ дважды плохой: оба запроса оплачены и записаны."""
+    status, news, posts, requests, _ = await _run_two_stage(
+        [_screen(), AiRawResponse("{}", 1000, 200), AiRawResponse("не json", 1000, 200)]
+    )
+    assert status is NewsStatus.FAILED
+    assert news.reason == "bad_ai_response"
+    assert posts.posts == []
+    assert [(r.kind, r.ok) for r in requests.requests] == [
+        ("screen", True),
+        ("summary", False),
+        ("summary", False),
+    ]
+
+
+async def test_two_stage_review_mode_and_facts() -> None:
+    status, news, posts, _, _ = await _run_two_stage([_screen(), _summary()], ModerationMode.REVIEW)
+    assert status is NewsStatus.PENDING_REVIEW
+    assert news.history == [NewsStatus.PROCESSED, NewsStatus.PENDING_REVIEW]
+
+    invented = _summary(summary="Процессор Nvidia на 45% быстрее, сообщил Дженсен Хуанг.")
+    status, _, posts, _, _ = await _run_two_stage([_screen(), invented])
+    assert status is NewsStatus.PENDING_REVIEW
+    assert posts.posts[0].review_note is not None
+
+
+async def test_budget_exceeded_between_stages_keeps_screen_request() -> None:
+    """Бюджет кончился после отбора: пересказ не запрашивается, запись отбора цела."""
+
+    class Exhausted:
+        async def check(self, now: datetime) -> None:
+            raise BudgetExceeded(Decimal("1"), Decimal("1"))
+
+    news_repo, post_repo = FakeNewsRepo(), FakePostRepo()
+    requests, client = FakeRequestRepo(), FakeClient([_screen(), _summary()])
+    processor = AiProcessor(
+        client, PROFILE, _repos(news_repo, post_repo, requests), CFG, budget=Exhausted()
+    )
+    with pytest.raises(BudgetExceeded):
+        await processor.process(News(), Source())
+    assert len(client.calls) == 1
+    assert [(r.kind, r.ok) for r in requests.requests] == [("screen", True)]
+    assert news_repo.status is NewsStatus.NORMALIZED
+    assert post_repo.posts == []
+
+
+async def test_budget_checked_only_between_stages() -> None:
+    """Пройденный бюджет не мешает: обработка идёт как обычно."""
+
+    class Ok:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def check(self, now: datetime) -> None:
+            self.calls += 1
+
+    budget = Ok()
+    status, _, _, _, _ = await _run_two_stage([_screen(), _summary()], budget=budget)
+    assert status is NewsStatus.APPROVED
+    assert budget.calls == 1
+
+
 async def test_auto_mode_approved() -> None:
     status, news, posts, _ = await _run([_answer()])
     assert status is NewsStatus.APPROVED
@@ -137,7 +335,7 @@ async def test_auto_mode_approved() -> None:
     assert post.news_item_id == 1
     assert post.ai_title == "Nvidia показала новый процессор"
     assert post.hashtags == ["#железо"]
-    assert post.prompt_version == PROMPT_VERSION
+    assert post.prompt_version == LEGACY_PROMPT_VERSION
     assert (post.prompt_tokens, post.completion_tokens) == (1000, 200)
     assert post.cost == cost(1000, 0, 200, CFG), "стоимость считается по ценам из конфигурации"
     assert post.review_note is None
@@ -227,7 +425,7 @@ async def _run_with_requests(
 ) -> tuple[NewsStatus, FakeRequestRepo, FakePostRepo]:
     news_repo, post_repo, requests = FakeNewsRepo(), FakePostRepo(), FakeRequestRepo()
     processor = AiProcessor(
-        FakeClient(outcomes), PROFILE, _repos(news_repo, post_repo, requests), CFG
+        FakeClient(outcomes), PROFILE, _repos(news_repo, post_repo, requests), LEGACY_CFG
     )
     status = await processor.process(News(), Source())
     return status, requests, post_repo
@@ -255,7 +453,10 @@ async def test_cached_tokens_reduce_request_cost() -> None:
     news_repo, post_repo, requests = FakeNewsRepo(), FakePostRepo(), FakeRequestRepo()
     answer = AiRawResponse(_answer().content, 1000, 200, cached_tokens=800)
     processor = AiProcessor(
-        FakeClient([answer]), PROFILE, _repos(news_repo, post_repo, requests), cfg
+        FakeClient([answer]),
+        PROFILE,
+        _repos(news_repo, post_repo, requests),
+        cfg.model_copy(update={"two_stage": False}),
     )
     assert await processor.process(News(), Source()) is NewsStatus.APPROVED
     [request] = requests.requests
@@ -308,7 +509,7 @@ async def test_attempt_without_response_recorded_with_zeros() -> None:
 )
 async def test_api_errors_propagate_and_status_unchanged(error: Exception) -> None:
     news_repo, post_repo = FakeNewsRepo(), FakePostRepo()
-    processor = AiProcessor(FakeClient([error]), PROFILE, _repos(news_repo, post_repo), CFG)
+    processor = AiProcessor(FakeClient([error]), PROFILE, _repos(news_repo, post_repo), LEGACY_CFG)
     with pytest.raises(type(error)):
         await processor.process(News(), Source())
     assert news_repo.status is NewsStatus.NORMALIZED
@@ -352,7 +553,7 @@ async def _run_with_admit(
 ) -> tuple[NewsStatus, FakeNewsRepo]:
     news_repo, post_repo = FakeNewsRepo(), FakePostRepo()
     processor = AiProcessor(
-        FakeClient([_answer()]), PROFILE, _repos(news_repo, post_repo, admit=admit), CFG
+        FakeClient([_answer()]), PROFILE, _repos(news_repo, post_repo, admit=admit), LEGACY_CFG
     )
     status = await processor.process(News(), Source(mode))
     return status, news_repo

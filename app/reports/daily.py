@@ -114,6 +114,21 @@ class Funnel:
 
 
 @dataclass(frozen=True)
+class KindSpending:
+    """Запросы к модели одного вида.
+
+    Attributes:
+        kind: Вид запроса (screen — отбор, summary — пересказ).
+        requests: Сколько запросов этого вида.
+        cost: Их суммарная стоимость.
+    """
+
+    kind: str
+    requests: int
+    cost: Decimal
+
+
+@dataclass(frozen=True)
 class Spending:
     """Расход на модель за период.
 
@@ -130,6 +145,7 @@ class Spending:
         budget_share: Доля дневного бюджета.
         cost_per_post: Расход на один вышедший пост.
         month_to_date: Расход с начала месяца.
+        by_kind: Запросы по видам: отбор и пересказ.
     """
 
     cost: Decimal = Decimal(0)
@@ -141,6 +157,7 @@ class Spending:
     budget_share: float | None = None
     cost_per_post: Decimal | None = None
     month_to_date: Decimal = Decimal(0)
+    by_kind: tuple[KindSpending, ...] = ()
 
     @property
     def cached_share(self) -> float | None:
@@ -497,6 +514,17 @@ async def _spending(
             )
         ).scalar_one()
     )
+    by_kind = tuple(
+        KindSpending(kind=kind, requests=requests, cost=Decimal(kind_cost))
+        for kind, requests, kind_cost in (
+            await session.execute(
+                select(AiRequest.kind, func.count(), func.coalesce(func.sum(AiRequest.cost), 0))
+                .where(AiRequest.created_at >= period.start, AiRequest.created_at < period.end)
+                .group_by(AiRequest.kind)
+                .order_by(AiRequest.kind)
+            )
+        ).all()
+    )
     budget_share = float(cost / ctx.daily_budget) if ctx.daily_budget else None
     return Spending(
         cost=cost,
@@ -508,6 +536,7 @@ async def _spending(
         budget_share=budget_share,
         cost_per_post=cost / publications if publications else None,
         month_to_date=month,
+        by_kind=by_kind,
     )
 
 

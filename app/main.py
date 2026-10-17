@@ -263,7 +263,7 @@ def build_components(settings: Settings) -> list[Component]:
     budget = BudgetGuard(_SessionCost(scope), alerts, settings.ai, tz)
 
     def processor(repos: AiRepos) -> AiProcessor:
-        return AiProcessor(deepseek, settings.channel, repos, settings.ai)
+        return AiProcessor(deepseek, settings.channel, repos, settings.ai, budget=budget)
 
     collection_deps = CollectionDeps(
         session_scope=scope,

@@ -162,7 +162,9 @@ async def process_normalized_batch(now: datetime, deps: AiStageDeps) -> AiStageR
     """Обрабатывает пачку новостей в статусе normalized моделью.
 
     Пауза (настройка paused) и бюджет проверяются до захвата пачки; бюджет — ещё
-    и перед каждой новостью. Пачка захватывается короткой транзакцией, каждая
+    и перед каждой новостью, а при двухэтапной обработке — между отбором и
+    пересказом (тогда транзакция всё равно коммитится, чтобы не потерять запись
+    об оплаченном запросе отбора). Пачка захватывается короткой транзакцией, каждая
     новость обрабатывается в своей транзакции (смена статуса защищена ожидаемым
     статусом), не больше max_concurrency одновременно. BudgetExceeded и ошибки API
     (недоступен или отклоняет запросы) останавливают пачку: необработанные новости
@@ -244,6 +246,7 @@ async def _process_one(item: ClaimableNews, now: datetime, deps: AiStageDeps) ->
         raise _StopBatch("budget") from exc
 
     post: ProcessedPost | None = None
+    out_of_budget = False
     try:
         async with deps.session_scope() as session:
             source = await deps.source_repo(session).get(item.source_id)
@@ -264,11 +267,17 @@ async def _process_one(item: ClaimableNews, now: datetime, deps: AiStageDeps) ->
                     admit=admit,
                 )
             )
-            status = await processor.process(item, source)
+            try:
+                status = await processor.process(item, source)
+            except BudgetExceeded:
+                out_of_budget = True
+                status = None
             if status is NewsStatus.PENDING_REVIEW:
                 post = await posts.get_by_news(item.id)
     except (AiUnavailableError, AiFatalError) as exc:
         raise _StopBatch("ai_down", exc) from exc
+    if out_of_budget:
+        raise _StopBatch("budget")
 
     if status is NewsStatus.FAILED:
         await _alert_item_failed(item, REASON_BAD_AI_RESPONSE, now, deps)

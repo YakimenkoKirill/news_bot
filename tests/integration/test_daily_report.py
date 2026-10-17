@@ -130,13 +130,14 @@ class Fixture:
         ok: bool = True,
         tokens: tuple[int, int] = (100, 50),
         cached_tokens: int = 0,
+        kind: str = "summary",
     ) -> None:
         """Добавляет запрос к модели без пересказа (например, неудачную попытку)."""
         async with self.scope() as session:
             session.add(
                 AiRequest(
                     news_item_id=news_id,
-                    kind="summary",
+                    kind=kind,
                     model="test-model",
                     prompt_tokens=tokens[0],
                     cached_tokens=cached_tokens,
@@ -369,6 +370,29 @@ async def test_failed_requests_counted_in_spending(
     assert (spending.requests, spending.failed) == (3, 2)
     assert spending.month_to_date == Decimal("0.009")
     assert news_id != failed_id
+
+
+async def test_spending_split_by_kind(
+    session_factory: async_sessionmaker[AsyncSession], session: AsyncSession
+) -> None:
+    """Отбор и пересказ видны в отчёте отдельно."""
+    fixture = Fixture(session_factory)
+    source_id = await fixture.source("A")
+    news_id, _ = await fixture.news(
+        source_id, created_at=msk(9), published_at=msk(8), score=0.9, cost="0.002"
+    )
+    await fixture.ai_request(news_id, created_at=msk(9), cost="0.0004", kind="screen")
+    screened_out, _ = await fixture.news(
+        source_id, status=S.FILTERED, created_at=msk(10), reason="not_relevant"
+    )
+    await fixture.ai_request(screened_out, created_at=msk(10), cost="0.0004", kind="screen")
+
+    spending = (await fixture.report(session)).spending
+    assert {item.kind: (item.requests, item.cost) for item in spending.by_kind} == {
+        "screen": (2, Decimal("0.0008")),
+        "summary": (1, Decimal("0.002")),
+    }
+    assert spending.cost == Decimal("0.0028")
 
 
 async def test_cached_tokens_share_in_spending(

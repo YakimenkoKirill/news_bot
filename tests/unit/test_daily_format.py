@@ -12,6 +12,7 @@ from app.reports.daily import (
     Errors,
     Funnel,
     Headline,
+    KindSpending,
     Publications,
     Quality,
     QueueState,
@@ -110,6 +111,10 @@ def _full() -> DailyReport:
             prompt_tokens=45200,
             cached_tokens=11300,
             completion_tokens=18300,
+            by_kind=(
+                KindSpending(kind="screen", requests=50, cost=Decimal("0.03")),
+                KindSpending(kind="summary", requests=12, cost=Decimal("0.18")),
+            ),
             budget_share=0.42,
             cost_per_post=Decimal("0.0175"),
             month_to_date=Decimal("3.4"),
@@ -263,6 +268,44 @@ def test_spending_block() -> None:
     assert "Стоимость поста: $0.0175" in text
     assert "С начала месяца: $3.4" in text
     assert "⚠️" not in text.split("<b>Качество</b>")[0].split("<b>Модель</b>")[1]
+
+
+def test_stages_line_in_spending_block() -> None:
+    text = _text(_full())
+    assert "отбор: 50 запросов, $0.03; пересказ: 12, $0.18" in text
+
+
+def test_stages_line_hidden_without_screen_requests() -> None:
+    spending = Spending(
+        requests=5,
+        prompt_tokens=100,
+        by_kind=(KindSpending(kind="summary", requests=5, cost=Decimal("0.05")),),
+    )
+    model_block = _text(_report(spending=spending)).split("<b>Модель</b>")[1]
+    assert "отбор" not in model_block
+    assert "пересказ" not in model_block
+
+
+def test_stages_line_declines_requests_word() -> None:
+    spending = Spending(
+        requests=2,
+        by_kind=(
+            KindSpending(kind="screen", requests=1, cost=Decimal("0.01")),
+            KindSpending(kind="summary", requests=1, cost=Decimal("0.02")),
+        ),
+    )
+    assert "отбор: 1 запрос, $0.01; пересказ: 1, $0.02" in _text(_report(spending=spending))
+
+
+def test_unknown_request_kind_shown_as_is() -> None:
+    spending = Spending(
+        requests=3,
+        by_kind=(
+            KindSpending(kind="screen", requests=2, cost=Decimal("0.01")),
+            KindSpending(kind="verify", requests=1, cost=Decimal("0.04")),
+        ),
+    )
+    assert "отбор: 2 запроса, $0.01; verify: 1, $0.04" in _text(_report(spending=spending))
 
 
 def test_cache_and_failed_requests_in_spending_block() -> None:
