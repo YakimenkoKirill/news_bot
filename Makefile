@@ -5,7 +5,7 @@ IMAGE ?= news-bot:latest
 ENV_FILE ?= .env
 COMPOSE_DEV := docker compose --env-file $(ENV_FILE) -f docker/docker-compose.dev.yml
 
-.PHONY: install fmt lint test test-integration coverage docker-build db-up db-down db-logs migrate migration
+.PHONY: install fmt lint test test-integration test-integration-ci check-migrations coverage docker-build db-up db-down db-logs migrate migration
 
 install:
 	$(PYTHON) -m venv $(VENV)
@@ -26,6 +26,17 @@ test:
 
 test-integration:
 	$(BIN)/pytest -m integration
+
+# CI: без доступной тестовой БД и при любом пропуске прогон падает
+test-integration-ci:
+	REQUIRE_TEST_DB=1 $(BIN)/pytest -m integration -rs --strict-markers
+
+# CI: схема поднимается и откатывается целиком, модели совпадают с миграциями
+check-migrations:
+	$(BIN)/alembic upgrade head
+	$(BIN)/alembic downgrade base
+	$(BIN)/alembic upgrade head
+	$(BIN)/alembic check
 
 # unit и integration (интеграционные пропускаются без TEST_DATABASE_URL)
 coverage:

@@ -66,8 +66,8 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
       - run: make install
-      - run: make migrate
-      - run: make test-integration
+      - run: make check-migrations
+      - run: make test-integration-ci
 
   docker:
     runs-on: ubuntu-latest

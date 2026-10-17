@@ -30,7 +30,7 @@ make migrate                  # схема БД
 .venv/bin/python -m app       # запуск; остановка — Ctrl+C или SIGTERM
 ```
 
-Проверки: `make lint`, `make test` (unit), `make test-integration` (нужны `make db-up` и `TEST_DATABASE_URL`), `make coverage`.
+Проверки: `make lint`, `make test` (unit), `make test-integration` (нужны `make db-up` и `TEST_DATABASE_URL`), `make coverage`. Как это же проверяется в CI — в разделе «Тесты и CI».
 
 Если порт 5432 занят другим PostgreSQL, задайте в `.env` `POSTGRES_PORT=5433` и этот же порт в `DATABASE_URL` и `TEST_DATABASE_URL`.
 
@@ -299,6 +299,20 @@ Telegram разрешает боту удалять сообщения не ст
 Если новость уже повторил другой администратор, бот ответит, что она не в статусе `failed`.
 
 **Сколько хранится.** Закрытые инциденты старше `alerts.retention_days` (30 дней) удаляются фоновой задачей раз в `scheduler.purge_every_h` часов. Открытые не удаляются никогда. Число открытых ошибок видно в `/status`.
+
+## Тесты и CI
+
+| Цель | Что делает | Где используется |
+| --- | --- | --- |
+| `make test` | unit-тесты без сети и БД | локально, job `unit` |
+| `make test-integration` | тесты с реальной БД; без `TEST_DATABASE_URL` пропускаются с подсказкой | локально |
+| `make test-integration-ci` | то же, но с `REQUIRE_TEST_DB=1`: без БД — ошибка, и **любой пропуск** валит прогон | job `integration` |
+| `make check-migrations` | `alembic upgrade head`, `downgrade base`, `upgrade head`, затем `alembic check` | job `integration` |
+| `make coverage` | покрытие с порогом из `scripts/check_coverage.py` | локально |
+
+**Почему так.** Интеграционные тесты пропускаются, если тестовой БД нет: это удобно локально, но в CI опечатка в переменной превратила бы все эти тесты в «skipped», а job остался бы зелёным. Поэтому в CI стоит `REQUIRE_TEST_DB=1`: отсутствие `TEST_DATABASE_URL` становится ошибкой, а пропущенный тест — красным прогоном.
+
+`make check-migrations` ловит две разные поломки: нерабочий `downgrade` (схему нельзя откатить) и расхождение моделей с миграциями — например, новый индекс в модели, под который миграцию забыли. То же расхождение проверяет `tests/integration/test_schema_matches_models.py`, поэтому оно видно и в обычном прогоне интеграционных тестов.
 
 ## Проверка живости
 

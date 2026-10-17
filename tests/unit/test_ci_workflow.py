@@ -42,7 +42,11 @@ def test_postgres_16_service_with_healthcheck() -> None:
 def test_jobs_run_expected_targets() -> None:
     assert _runs("lint") == ["make install", "make lint"]
     assert _runs("unit") == ["make install", "make test"]
-    assert _runs("integration") == ["make install", "make migrate", "make test-integration"]
+    assert _runs("integration") == [
+        "make install",
+        "make check-migrations",
+        "make test-integration-ci",
+    ]
     assert _runs("docker") == ["make docker-build"]
 
 
@@ -67,3 +71,24 @@ def test_python_311_with_pip_cache() -> None:
 def test_no_secrets_used() -> None:
     text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "secrets." not in text
+
+
+def _makefile() -> str:
+    return (ROOT / "Makefile").read_text(encoding="utf-8")
+
+
+def test_integration_job_requires_database() -> None:
+    """Без REQUIRE_TEST_DB пропуск интеграционных тестов остался бы незамеченным."""
+    recipe = _makefile().split("test-integration-ci:")[1].split("\n\n")[0]
+    assert "REQUIRE_TEST_DB=1" in recipe
+    assert "-m integration" in recipe
+
+
+def test_check_migrations_goes_up_down_up() -> None:
+    recipe = _makefile().split("check-migrations:")[1].split("\n\n")[0]
+    assert [line.split("alembic ")[1] for line in recipe.splitlines() if "alembic" in line] == [
+        "upgrade head",
+        "downgrade base",
+        "upgrade head",
+        "check",
+    ]

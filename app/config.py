@@ -45,6 +45,7 @@ CONFIGS_DIR = Path(__file__).resolve().parent.parent / "configs"
 ENVIRONMENTS: tuple[Environment, ...] = get_args(Environment)
 DEFAULT_ENV: Environment = "dev"
 QUIET_HOURS_FORMAT = "%H:%M"
+TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 SIMHASH_BANDS = 4
 SIMHASH_BAND_BITS = 16
 SIMHASH_MAX_DISTANCE = SIMHASH_BANDS - 1
@@ -643,11 +644,25 @@ class TestDatabaseSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     test_database_url: str | None = None
+    require_test_db: str | None = None
 
 
 def get_test_database_url() -> str | None:
     """Возвращает TEST_DATABASE_URL из окружения или .env, если он задан."""
     return TestDatabaseSettings().test_database_url or None
+
+
+def require_test_db() -> bool:
+    """Обязательны ли интеграционные тесты (REQUIRE_TEST_DB).
+
+    В CI переменная выставлена: без доступной тестовой БД тесты должны падать,
+    а не пропускаться, иначе опечатка в workflow оставит job зелёным.
+
+    Returns:
+        True, если REQUIRE_TEST_DB включает строгий режим.
+    """
+    value = TestDatabaseSettings().require_test_db
+    return str(value).strip().lower() in TRUE_VALUES
 
 
 def child_process_env(**extra: str) -> dict[str, str]:
