@@ -18,6 +18,7 @@ class AlertKind(StrEnum):
     PUBLISH_ERROR = "publish_error"
     JOB_FAILED = "job_failed"
     AI_ITEM_FAILED = "ai_item_failed"
+    STATS_UNAVAILABLE = "stats_unavailable"
 
 
 class AlertEvent(BaseModel):

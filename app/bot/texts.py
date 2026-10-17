@@ -110,6 +110,7 @@ ALERT_TEMPLATES = {
     "publish_error": "🔴 <b>Ошибка публикации</b>\n{message}",
     "job_failed": "⚠️ <b>Ошибка фоновой задачи</b>\n{message}",
     "ai_item_failed": "🟠 <b>Модель не смогла обработать новость</b>\n{message}",
+    "stats_unavailable": "🟡 <b>Статистика канала недоступна</b>\n{message}",
 }
 
 QUEUE_TITLES = {"queue": "<b>Очередь публикации</b>", "review": "<b>На модерации</b>"}
@@ -195,6 +196,7 @@ ALERT_KIND_LABELS = {
     "publish_error": "ошибка публикации",
     "job_failed": "сбой фоновой задачи",
     "ai_item_failed": "новость не обработана",
+    "stats_unavailable": "статистика канала недоступна",
 }
 
 ERRORS_TITLE = "<b>Ошибки</b> · открыто {count}"

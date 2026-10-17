@@ -16,6 +16,8 @@ from app.reports.daily import (
     Publications,
     Quality,
     QueueState,
+    Readers,
+    ReadPost,
     SourceStats,
     Spending,
     TopPost,
@@ -43,6 +45,7 @@ def _report(**overrides: object) -> DailyReport:
         "quality": Quality(),
         "queue": QueueState(),
         "errors": Errors(),
+        "readers": Readers(),
         "previous": Headline(),
     }
     fields.update(overrides)
@@ -118,6 +121,17 @@ def _full() -> DailyReport:
             budget_share=0.42,
             cost_per_post=Decimal("0.0175"),
             month_to_date=Decimal("3.4"),
+        ),
+        readers=Readers(
+            posts=20,
+            views=48000,
+            forwards=120,
+            reactions=340,
+            top=(
+                ReadPost(title="Ставка сохранена", views=5200, url="https://t.me/c/1/10"),
+                ReadPost(title="Без ссылки", views=4100, url=None),
+            ),
+            by_source=(("Bell", 1240), ("Экономист", 980)),
         ),
         quality=Quality(
             delay_median_min=12.5,
@@ -334,6 +348,27 @@ def test_budget_warning_above_threshold() -> None:
 def test_budget_warning_at_threshold() -> None:
     report = _report(spending=Spending(budget_share=CFG.budget_warn_share))
     assert "⚠️" in _text(report).split("<b>Модель</b>")[1]
+
+
+def test_readers_block() -> None:
+    text = _text(_full())
+    assert "<b>Читатели</b>" in text
+    assert "Просмотров: 48 000 · на пост 2 400 · постов со статистикой: 20" in text
+    assert "Пересылок: 120 · реакций: 340" in text
+    assert '• <a href="https://t.me/c/1/10">5 200 Ставка сохранена</a>' in text
+    assert "• 4 100 Без ссылки" in text
+    assert "Просмотры на пост: Bell 1 240, Экономист 980" in text
+
+
+def test_readers_block_hidden_without_stats() -> None:
+    assert "<b>Читатели</b>" not in _text(_report(readers=Readers()))
+
+
+def test_readers_block_without_forwards_and_reactions() -> None:
+    readers = Readers(posts=2, views=100, forwards=0, reactions=0)
+    block = _text(_report(readers=readers))
+    assert "Просмотров: 100 · на пост 50 · постов со статистикой: 2" in block
+    assert "Пересылок" not in block
 
 
 def test_quality_marks_targets() -> None:

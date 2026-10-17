@@ -20,6 +20,7 @@ pytestmark = pytest.mark.integration
 
 T = TypeVar("T")
 APP_TABLES = set(Base.metadata.tables)
+STATS_COLUMNS = {"views", "forwards", "reactions", "stats_at"}
 
 
 def _with_connection(url: str, fn: Callable[[Connection], T]) -> T:
@@ -67,7 +68,7 @@ def test_repeated_upgrade_is_noop(clean_db: Config, test_database_url: str) -> N
     head = ScriptDirectory.from_config(clean_db).get_current_head()
     command.upgrade(clean_db, "head")
     command.upgrade(clean_db, "head")
-    assert _current_revision(test_database_url) == head == "0008"
+    assert _current_revision(test_database_url) == head == "0009"
 
 
 def test_news_items_indexes(clean_db: Config, test_database_url: str) -> None:
@@ -116,7 +117,9 @@ def test_publication_initiator_added_in_0003(clean_db: Config, test_database_url
     command.downgrade(clean_db, "0002")
     after = columns(test_database_url)
     assert "initiated_by" not in after
-    assert after == before_downgrade - {"initiated_by"}
+    assert after == before_downgrade - {"initiated_by", *STATS_COLUMNS}, (
+        "по пути вниз снимаются и столбцы статистики из 0009"
+    )
     assert _current_revision(test_database_url) == "0002"
 
 
@@ -347,6 +350,22 @@ def test_repeated_0007_upgrade_is_noop(clean_db: Config, test_database_url: str)
     command.upgrade(clean_db, "head")
     news = _indexes(test_database_url, "news_items")
     assert {"ix_news_items_created_at", "ix_news_items_source_status"} <= set(news)
+
+
+def test_post_stats_columns_added_in_0009(clean_db: Config, test_database_url: str) -> None:
+    command.upgrade(clean_db, "head")
+
+    def columns(url: str) -> set[str]:
+        found = _with_connection(url, lambda conn: inspect(conn).get_columns("publications"))
+        return {str(column["name"]) for column in found}
+
+    assert columns(test_database_url) >= STATS_COLUMNS
+
+    command.downgrade(clean_db, "0008")
+    after = columns(test_database_url)
+    assert not STATS_COLUMNS & after
+    assert "initiated_by" in after
+    assert _current_revision(test_database_url) == "0008"
 
 
 def test_autogenerate_finds_no_differences(clean_db: Config, test_database_url: str) -> None:

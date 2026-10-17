@@ -118,7 +118,7 @@ moderation:
 alerts:
   throttle_min: 30
   # виды ошибок, которые только пишутся в журнал /errors и не шлются в чат
-  silent_kinds: ["ai_item_failed"]
+  silent_kinds: ["ai_item_failed", "stats_unavailable"]
   max_message_chars: 2000   # сколько символов сообщения хранить в журнале
   retention_days: 30        # сколько хранить закрытые инциденты
 
@@ -134,6 +134,7 @@ scheduler:
   daily_report_every_min: 5
   recover_every_min: 10   # как часто искать зависшие отправки (publisher.stuck_after_min)
   retention_every_h: 24   # как часто очищать тексты старых новостей
+  stats_every_min: 60     # как часто собирать статистику постов канала
   misfire_grace_s: 60
   failures_before_alert: 3
 
@@ -145,6 +146,10 @@ daily_report:
   top_sources: 10         # сколько источников показывать в таблице, остальные — строкой «прочие»
   source_name_chars: 18   # до скольких символов обрезать имя источника в таблице
   budget_warn_share: 0.8  # с какой доли дневного бюджета помечать расход «⚠️»
+
+stats:
+  delay_h: 24     # через сколько часов после выхода поста собирать статистику
+  max_age_h: 72   # после этого срока статистику уже не запрашиваем
 
 retention:
   # через сколько дней очищать тексты новостей в конечных статусах

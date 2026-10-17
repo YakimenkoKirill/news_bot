@@ -199,6 +199,52 @@ class Errors:
 
 
 @dataclass(frozen=True)
+class ReadPost:
+    """Пост с собранной статистикой канала.
+
+    Attributes:
+        title: Заголовок поста.
+        views: Просмотры.
+        url: Ссылка на пост или None, если сообщения нет.
+    """
+
+    title: str
+    views: int
+    url: str | None
+
+
+@dataclass(frozen=True)
+class Readers:
+    """Статистика чтения постов за период.
+
+    Считаются только посты, у которых статистика уже собрана (stats_at не NULL
+    и просмотры известны): у свежих постов её ещё нет.
+
+    Attributes:
+        posts: Сколько постов со статистикой.
+        views: Всего просмотров.
+        forwards: Всего пересылок.
+        reactions: Всего реакций.
+        top: Лучшие посты по просмотрам.
+        by_source: Средние просмотры на пост по источникам, от больших к меньшим.
+    """
+
+    posts: int = 0
+    views: int = 0
+    forwards: int = 0
+    reactions: int = 0
+    top: tuple[ReadPost, ...] = ()
+    by_source: tuple[tuple[str, int], ...] = ()
+
+    @property
+    def views_per_post(self) -> int | None:
+        """Средние просмотры поста или None, если статистики нет."""
+        if not self.posts:
+            return None
+        return round(self.views / self.posts)
+
+
+@dataclass(frozen=True)
 class Headline:
     """Главные цифры периода для сравнения с предыдущим."""
 
@@ -219,6 +265,7 @@ class DailyReport:
     quality: Quality
     queue: QueueState
     errors: Errors
+    readers: Readers
     previous: Headline
 
 
@@ -660,6 +707,60 @@ async def _headline(session: AsyncSession, period: Period) -> Headline:
     return Headline(publications=publications, collected=collected, cost=Decimal(cost))
 
 
+async def _readers(session: AsyncSession, period: Period, ctx: DailyContext) -> Readers:
+    """Считает просмотры постов периода, у которых статистика уже собрана."""
+    read = (
+        Publication.status == PublicationStatus.SENT,
+        Publication.published_at >= period.start,
+        Publication.published_at < period.end,
+        Publication.views.is_not(None),
+    )
+    totals = (
+        await session.execute(
+            select(
+                func.count(),
+                func.coalesce(func.sum(Publication.views), 0),
+                func.coalesce(func.sum(Publication.forwards), 0),
+                func.coalesce(func.sum(Publication.reactions), 0),
+            ).where(*read)
+        )
+    ).one()
+    if not totals[0]:
+        return Readers()
+
+    top_rows = (
+        await session.execute(
+            select(ProcessedPost.ai_title, Publication.views, Publication.message_id)
+            .join(ProcessedPost, ProcessedPost.id == Publication.processed_post_id)
+            .where(*read)
+            .order_by(Publication.views.desc(), Publication.id)
+            .limit(ctx.top_posts)
+        )
+    ).all()
+    by_source_rows = (
+        await session.execute(
+            select(Source.name, func.avg(Publication.views))
+            .join(ProcessedPost, ProcessedPost.id == Publication.processed_post_id)
+            .join(NewsItem, NewsItem.id == ProcessedPost.news_item_id)
+            .join(Source, Source.id == NewsItem.source_id)
+            .where(*read)
+            .group_by(Source.name)
+            .order_by(func.avg(Publication.views).desc(), Source.name)
+        )
+    ).all()
+    return Readers(
+        posts=totals[0],
+        views=int(totals[1] or 0),
+        forwards=int(totals[2] or 0),
+        reactions=int(totals[3] or 0),
+        top=tuple(
+            ReadPost(title=title, views=int(views or 0), url=post_url(ctx.channel_id, message_id))
+            for title, views, message_id in top_rows
+        ),
+        by_source=tuple((name, round(float(average))) for name, average in by_source_rows),
+    )
+
+
 async def collect_daily(
     session: AsyncSession,
     period: Period,
@@ -696,5 +797,6 @@ async def collect_daily(
         quality=await _quality(session, period, ctx),
         queue=await _queue(session, ctx, paused),
         errors=await _errors(session, period),
+        readers=await _readers(session, period, ctx),
         previous=await _headline(session, previous),
     )

@@ -268,6 +268,34 @@ def _queue_block(report: DailyReport) -> str | None:
     return "\n".join(lines)
 
 
+def _readers_block(report: DailyReport) -> str | None:
+    """Блок «Читатели» или None, если статистики постов ещё нет."""
+    readers = report.readers
+    per_post = readers.views_per_post
+    if not readers.posts or per_post is None:
+        return None
+    lines = [
+        "<b>Читатели</b>",
+        f"Просмотров: {_thousands(readers.views)} · на пост {_thousands(per_post)}"
+        f" · постов со статистикой: {readers.posts}",
+    ]
+    if readers.forwards or readers.reactions:
+        lines.append(
+            f"Пересылок: {_thousands(readers.forwards)} · реакций: {_thousands(readers.reactions)}"
+        )
+    if readers.top:
+        lines.append("Больше всего читали:")
+        for post in readers.top:
+            label = f"{_thousands(post.views)} {_escape(post.title)}"
+            lines.append(f'• <a href="{post.url}">{label}</a>' if post.url else f"• {label}")
+    if readers.by_source:
+        details = ", ".join(
+            f"{_escape(name)} {_thousands(views)}" for name, views in readers.by_source
+        )
+        lines.append(f"Просмотры на пост: {details}")
+    return "\n".join(lines)
+
+
 def _errors_block(report: DailyReport) -> str:
     errors = report.errors
     if not errors.open_incidents and not errors.new_by_kind and not errors.failed_news:
@@ -370,6 +398,7 @@ def format_daily(
         _funnel_block(report),
         _spending_block(report, cfg, budget),
         _quality_block(report, metrics),
+        _readers_block(report),
         _queue_block(report),
         _errors_block(report),
     ]

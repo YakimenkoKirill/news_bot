@@ -86,6 +86,7 @@ from app.reports.daily import DailyContext
 from app.reports.sender import DailyReportSender
 from app.reports.service import ReportDeps
 from app.scheduler import SchedulerDeps, build_scheduler
+from app.stats import StatsDeps, collect_post_stats
 
 log = structlog.get_logger(__name__)
 
@@ -320,6 +321,14 @@ def build_components(settings: Settings) -> list[Component]:
         tz=tz,
     )
     manual_deps = ManualPublishDeps(publish=publish_deps, news_repo=NewsRepository)
+    stats_deps = StatsDeps(
+        session_scope=scope,
+        publication_repo=PublicationRepository,
+        fetcher=telegram,
+        sink=alerts,
+        cfg=settings.stats,
+        channel_id=settings.telegram_channel_id,
+    )
     preview_deps = PreviewDeps(
         session_scope=scope,
         news_repo=NewsRepository,
@@ -408,6 +417,7 @@ def build_components(settings: Settings) -> list[Component]:
             daily_report=report_sender.send_due,
             recover_stuck=lambda now: recover_stuck(now, publish_deps),
             retention=retention,
+            post_stats=lambda now: collect_post_stats(now, stats_deps),
             sink=alerts,
         ),
         settings.scheduler,

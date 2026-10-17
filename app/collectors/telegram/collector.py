@@ -25,6 +25,22 @@ from app.logging import bind_context
 log = structlog.get_logger(__name__)
 
 TME_PREFIXES = ("https://t.me/", "http://t.me/", "t.me/", "https://telegram.me/")
+STATS_BATCH = 100
+
+
+@dataclass(frozen=True)
+class PostStats:
+    """Статистика опубликованного поста.
+
+    Attributes:
+        views: Просмотры.
+        forwards: Пересылки.
+        reactions: Сумма реакций всех видов; 0 — реакций нет или они выключены.
+    """
+
+    views: int
+    forwards: int
+    reactions: int
 
 
 class TgSourcesRepo(Protocol):
@@ -84,6 +100,29 @@ def channel_username(source: Source) -> str:
             value = value[len(prefix) :]
             break
     return value.lstrip("@").split("/")[0].split("?")[0]
+
+
+def _reactions_count(message: Any) -> int:
+    """Сумма реакций сообщения; 0, если реакций нет или они выключены."""
+    reactions = getattr(message, "reactions", None)
+    results = getattr(reactions, "results", None) or []
+    return sum(int(getattr(item, "count", 0) or 0) for item in results)
+
+
+def post_stats(message: Any) -> PostStats:
+    """Собирает статистику одного сообщения канала.
+
+    Args:
+        message: Сообщение Telethon.
+
+    Returns:
+        Просмотры, пересылки и сумма реакций; отсутствующие значения — нули.
+    """
+    return PostStats(
+        views=int(getattr(message, "views", 0) or 0),
+        forwards=int(getattr(message, "forwards", 0) or 0),
+        reactions=_reactions_count(message),
+    )
 
 
 def _chat_id(message: Any) -> int | None:
@@ -228,6 +267,49 @@ class TelegramCollector:
             min_id=min_id,
             stopped_by_age=stopped_by_age,
         )
+
+    async def fetch_post_stats(
+        self, channel_id: int, message_ids: Sequence[int]
+    ) -> dict[int, PostStats]:
+        """Собирает статистику постов канала публикации.
+
+        Сообщения запрашиваются пачками по STATS_BATCH; удалённого сообщения в
+        результате не будет. FloodWait пережидается, как в остальном сборщике.
+
+        Args:
+            channel_id: Канал (id или username канала публикации).
+            message_ids: Id сообщений в канале.
+
+        Returns:
+            Статистика по id сообщения; удалённые и пустые ответы пропущены.
+
+        Raises:
+            TemporaryCollectorError: Telegram просит ждать слишком долго.
+        """
+        if not message_ids:
+            return {}
+        entity = await self._stats_entity(channel_id)
+        collected: dict[int, PostStats] = {}
+        ids = list(message_ids)
+        for start in range(0, len(ids), STATS_BATCH):
+            chunk = ids[start : start + STATS_BATCH]
+
+            async def fetch(batch: list[int] = chunk) -> Any:
+                return await self._client.get_messages(entity, ids=batch)
+
+            messages = await with_flood_wait(fetch, self._config)
+            for message in messages or []:
+                if message is None:
+                    continue
+                collected[int(message.id)] = post_stats(message)
+        log.info("stats.fetched", channel_id=channel_id, requested=len(ids), got=len(collected))
+        return collected
+
+    async def _stats_entity(self, channel_id: int) -> Any:
+        async def get_entity() -> Any:
+            return await self._client.get_entity(channel_id)
+
+        return await with_flood_wait(get_entity, self._config)
 
     async def _resolve(self, sources: Sequence[Source]) -> dict[int, _Channel]:
         channels: dict[int, _Channel] = {}

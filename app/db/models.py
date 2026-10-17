@@ -188,6 +188,10 @@ class Publication(Base):
     status: Mapped[PublicationStatus] = mapped_column(_enum_column(PublicationStatus))
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     initiated_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    views: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    forwards: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reactions: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stats_at: Mapped[datetime | None] = mapped_column(_tz(), nullable=True)
 
     processed_post: Mapped[ProcessedPost] = relationship(
         back_populates="publications", lazy="raise"

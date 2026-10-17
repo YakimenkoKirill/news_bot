@@ -290,6 +290,7 @@ class SchedulerConfig(BaseModel):
     daily_report_every_min: float = Field(gt=0)
     recover_every_min: float = Field(gt=0)
     retention_every_h: float = Field(gt=0)
+    stats_every_min: float = Field(gt=0)
     misfire_grace_s: int = Field(ge=1)
     failures_before_alert: int = Field(ge=1)
 
@@ -320,6 +321,29 @@ class DailyReportConfig(BaseModel):
     def send_time(self) -> time:
         """Время отправки отчёта в локальном времени канала."""
         return datetime.strptime(self.send_at, QUIET_HOURS_FORMAT).time()
+
+
+class StatsConfig(BaseModel):
+    """Секция stats: сбор статистики опубликованных постов."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    delay_h: float = Field(gt=0)
+    max_age_h: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def _check_window(self) -> StatsConfig:
+        """Проверяет, что окно сбора статистики не пустое.
+
+        Raises:
+            ValueError: max_age_h не больше delay_h.
+        """
+        if self.max_age_h <= self.delay_h:
+            raise ValueError(
+                f"stats.max_age_h ({self.max_age_h}) должен быть больше delay_h "
+                f"({self.delay_h}): иначе окно сбора статистики пустое"
+            )
+        return self
 
 
 class RetentionConfig(BaseModel):
@@ -436,6 +460,7 @@ class Settings(BaseSettings):
     moderation: ModerationConfig
     alerts: AlertsConfig
     scheduler: SchedulerConfig
+    stats: StatsConfig
     retention: RetentionConfig
     daily_report: DailyReportConfig
     metrics: MetricsConfig

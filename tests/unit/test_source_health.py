@@ -176,4 +176,5 @@ def test_alert_event_validation() -> None:
         "publish_error",
         "job_failed",
         "ai_item_failed",
+        "stats_unavailable",
     ]

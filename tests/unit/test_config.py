@@ -153,7 +153,10 @@ def test_repository_configs_are_valid() -> None:
 
 def test_alerts_silent_kinds_and_message_limit(configs_dir: Path) -> None:
     settings = load_settings(configs_dir)
-    assert settings.alerts.silent_kinds == [AlertKind.AI_ITEM_FAILED]
+    assert settings.alerts.silent_kinds == [
+        AlertKind.AI_ITEM_FAILED,
+        AlertKind.STATS_UNAVAILABLE,
+    ]
     assert settings.alerts.max_message_chars == 2000
 
 
@@ -285,6 +288,28 @@ def test_ui_batch_size_must_be_positive(configs_dir: Path) -> None:
 def test_ui_unknown_key_rejected(configs_dir: Path) -> None:
     (configs_dir / "prod.yaml").write_text("ui:\n  surprise: 1\n", encoding="utf-8")
     with pytest.raises(ValidationError, match="surprise"):
+        load_settings(configs_dir, "prod")
+
+
+def test_stats_section(configs_dir: Path) -> None:
+    settings = load_settings(configs_dir)
+    assert settings.stats.delay_h == 24
+    assert settings.stats.max_age_h == 72
+    assert settings.scheduler.stats_every_min == 60
+
+
+def test_stats_window_must_not_be_empty(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text(
+        "stats:\n  delay_h: 48\n  max_age_h: 48\n", encoding="utf-8"
+    )
+    with pytest.raises(ValidationError, match="max_age_h"):
+        load_settings(configs_dir, "prod")
+
+
+@pytest.mark.parametrize("key", ["delay_h", "max_age_h"])
+def test_non_positive_stats_hours_rejected(configs_dir: Path, key: str) -> None:
+    (configs_dir / "prod.yaml").write_text(f"stats:\n  {key}: 0\n", encoding="utf-8")
+    with pytest.raises(ValidationError, match=key):
         load_settings(configs_dir, "prod")
 
 

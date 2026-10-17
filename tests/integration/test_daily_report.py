@@ -156,6 +156,10 @@ class Fixture:
         status: PublicationStatus = PublicationStatus.SENT,
         initiated_by: int | None = None,
         message_id: int | None = None,
+        views: int | None = None,
+        forwards: int | None = None,
+        reactions: int | None = None,
+        stats_at: datetime | None = None,
     ) -> None:
         async with self.scope() as session:
             session.add(
@@ -167,6 +171,10 @@ class Fixture:
                     published_at=at,
                     initiated_by=initiated_by,
                     error=None if status is PublicationStatus.SENT else "Telegram отклонил",
+                    views=views,
+                    forwards=forwards,
+                    reactions=reactions,
+                    stats_at=stats_at if stats_at is not None or views is None else at,
                 )
             )
 
@@ -425,6 +433,48 @@ async def test_requests_of_deleted_news_remain(
     spending = (await fixture.report(session)).spending
     assert spending.cost == Decimal("0.007")
     assert (spending.requests, spending.failed) == (1, 1)
+
+
+async def test_readers_block_counts_collected_stats(
+    session_factory: async_sessionmaker[AsyncSession], session: AsyncSession
+) -> None:
+    """Блок «Читатели» считает только посты с собранной статистикой."""
+    fixture = Fixture(session_factory)
+    first = await fixture.source("Bell")
+    second = await fixture.source("Экономист")
+    _, best = await fixture.news(first, created_at=msk(9), published_at=msk(8), score=0.9)
+    _, good = await fixture.news(first, created_at=msk(9), published_at=msk(8), score=0.8)
+    _, other = await fixture.news(second, created_at=msk(9), published_at=msk(8), score=0.7)
+    _, fresh = await fixture.news(first, created_at=msk(9), published_at=msk(8), score=0.6)
+    assert best and good and other and fresh
+    await fixture.publish(best, msk(10), message_id=10, views=5200, forwards=40, reactions=12)
+    await fixture.publish(good, msk(11), message_id=11, views=3800, forwards=10, reactions=5)
+    await fixture.publish(other, msk(12), message_id=12, views=1000, forwards=1, reactions=0)
+    await fixture.publish(fresh, msk(13), message_id=13)
+
+    readers = (await fixture.report(session)).readers
+
+    assert readers.posts == 3
+    assert readers.views == 10000
+    assert (readers.forwards, readers.reactions) == (51, 17)
+    assert readers.views_per_post == 3333
+    assert [post.views for post in readers.top] == [5200, 3800, 1000]
+    assert readers.top[0].url is not None and readers.top[0].url.endswith("/10")
+    assert readers.by_source == (("Bell", 4500), ("Экономист", 1000))
+
+
+async def test_readers_block_empty_without_stats(
+    session_factory: async_sessionmaker[AsyncSession], session: AsyncSession
+) -> None:
+    fixture = Fixture(session_factory)
+    source_id = await fixture.source("A")
+    _, post_id = await fixture.news(source_id, created_at=msk(9), published_at=msk(8), score=0.9)
+    assert post_id
+    await fixture.publish(post_id, msk(10), message_id=1)
+
+    readers = (await fixture.report(session)).readers
+    assert readers == type(readers)()
+    assert readers.views_per_post is None
 
 
 async def test_queue_state_and_errors(

@@ -31,6 +31,7 @@ JOB_PURGE = "purge_incidents"
 JOB_DAILY_REPORT = "daily_report"
 JOB_RECOVER = "recover_stuck"
 JOB_RETENTION = "retention"
+JOB_POST_STATS = "post_stats"
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,7 @@ class SchedulerDeps:
         daily_report: ежедневная отправка отчёта администраторам.
         recover_stuck: разбор зависших отправок (recover_stuck).
         retention: очистка текстов старых новостей.
+        post_stats: сбор статистики опубликованных постов.
         sink: Получатель алертов job_failed.
         clock: Источник текущего времени.
     """
@@ -66,6 +68,7 @@ class SchedulerDeps:
     daily_report: Job
     recover_stuck: Job
     retention: Job
+    post_stats: Job
     sink: AlertSink
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
 
@@ -165,6 +168,7 @@ def build_scheduler(
         ),
         (JOB_RECOVER, deps.recover_stuck, IntervalTrigger(minutes=cfg.recover_every_min)),
         (JOB_RETENTION, deps.retention, IntervalTrigger(hours=cfg.retention_every_h)),
+        (JOB_POST_STATS, deps.post_stats, IntervalTrigger(minutes=cfg.stats_every_min)),
     ]
     for job_id, job, trigger in jobs:
         scheduler.add_job(
