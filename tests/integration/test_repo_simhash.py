@@ -155,4 +155,23 @@ async def test_candidates_query_uses_indexes(session: AsyncSession) -> None:
         ).scalars()
     )
     assert "Seq Scan on news_items" not in plan, plan
-    assert "ix_news_items_simhash_b" in plan, plan
+    assert "Index Scan" in plan or "Bitmap Index Scan" in plan, plan
+
+
+async def test_each_band_index_is_usable(session: AsyncSession) -> None:
+    """Каждая часть ищется по своему индексу (simhash_bN, created_at)."""
+    await _news(session, "one", BASE)
+    bands = simhash_bands(BASE)
+    await session.execute(text("SET LOCAL enable_seqscan = off"))
+    for index, band in enumerate(bands):
+        plan = "\n".join(
+            row
+            for row in (
+                await session.execute(
+                    text(
+                        f"EXPLAIN SELECT id FROM news_items WHERE simhash_b{index} = :band"
+                    ).bindparams(band=band)
+                )
+            ).scalars()
+        )
+        assert f"ix_news_items_simhash_b{index}_created_at" in plan, plan

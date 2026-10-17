@@ -92,6 +92,8 @@ class NewsItem(Base):
         Index("ix_news_items_content_hash", "content_hash"),
         Index("ix_news_items_status_created_at", "status", "created_at"),
         Index("ix_news_items_cluster_id", "cluster_id"),
+        Index("ix_news_items_created_at", "created_at"),
+        Index("ix_news_items_source_status", "source_id", "status"),
         Index("ix_news_items_simhash_b0_created_at", "simhash_b0", "created_at"),
         Index("ix_news_items_simhash_b1_created_at", "simhash_b1", "created_at"),
         Index("ix_news_items_simhash_b2_created_at", "simhash_b2", "created_at"),
@@ -141,6 +143,7 @@ class ProcessedPost(Base):
     """Пересказ новости, подготовленный моделью; не больше одного на новость."""
 
     __tablename__ = "processed_posts"
+    __table_args__ = (Index("ix_processed_posts_created_at", "created_at"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     news_item_id: Mapped[int] = mapped_column(
@@ -172,6 +175,7 @@ class Publication(Base):
     """Попытка публикации поста в канал."""
 
     __tablename__ = "publications"
+    __table_args__ = (Index("ix_publications_channel_published", "channel_id", "published_at"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     processed_post_id: Mapped[int] = mapped_column(

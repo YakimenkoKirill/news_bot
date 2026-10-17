@@ -67,7 +67,7 @@ def test_repeated_upgrade_is_noop(clean_db: Config, test_database_url: str) -> N
     head = ScriptDirectory.from_config(clean_db).get_current_head()
     command.upgrade(clean_db, "head")
     command.upgrade(clean_db, "head")
-    assert _current_revision(test_database_url) == head == "0006"
+    assert _current_revision(test_database_url) == head == "0007"
 
 
 def test_news_items_indexes(clean_db: Config, test_database_url: str) -> None:
@@ -299,6 +299,54 @@ def test_0006_fills_bands_of_existing_rows(clean_db: Config, test_database_url: 
     assert second.simhash < 0
     assert third.simhash is None
     assert third.simhash_b0 is None
+
+
+REPORT_INDEXES = {
+    "publications": "ix_publications_channel_published",
+    "processed_posts": "ix_processed_posts_created_at",
+    "news_items": "ix_news_items_created_at",
+}
+
+
+def _indexes(url: str, table: str) -> dict[str, list[str]]:
+    found = _with_connection(url, lambda conn: inspect(conn).get_indexes(table))
+    return {
+        str(index["name"]): [str(column) for column in index["column_names"]] for index in found
+    }
+
+
+def test_report_indexes_added_in_0007(clean_db: Config, test_database_url: str) -> None:
+    command.upgrade(clean_db, "head")
+    assert _indexes(test_database_url, "publications")["ix_publications_channel_published"] == [
+        "channel_id",
+        "published_at",
+    ]
+    assert _indexes(test_database_url, "processed_posts")["ix_processed_posts_created_at"] == [
+        "created_at"
+    ]
+    news = _indexes(test_database_url, "news_items")
+    assert news["ix_news_items_created_at"] == ["created_at"]
+    assert news["ix_news_items_source_status"] == ["source_id", "status"]
+
+    command.downgrade(clean_db, "0006")
+    after_news = _indexes(test_database_url, "news_items")
+    assert "ix_news_items_created_at" not in after_news
+    assert "ix_news_items_source_status" not in after_news
+    assert after_news["ix_news_items_status_created_at"] == ["status", "created_at"]
+    assert "ix_news_items_simhash_b0_created_at" in after_news
+    assert "ix_publications_channel_published" not in _indexes(test_database_url, "publications")
+    assert "ix_processed_posts_created_at" not in _indexes(test_database_url, "processed_posts")
+    assert "ix_ai_requests_created_at" in _indexes(test_database_url, "ai_requests")
+    assert _current_revision(test_database_url) == "0006"
+
+
+def test_repeated_0007_upgrade_is_noop(clean_db: Config, test_database_url: str) -> None:
+    """Индексы создаются с IF NOT EXISTS: повторный upgrade не падает."""
+    command.upgrade(clean_db, "head")
+    command.downgrade(clean_db, "0006")
+    command.upgrade(clean_db, "head")
+    news = _indexes(test_database_url, "news_items")
+    assert {"ix_news_items_created_at", "ix_news_items_source_status"} <= set(news)
 
 
 def test_autogenerate_finds_no_differences(clean_db: Config, test_database_url: str) -> None:
