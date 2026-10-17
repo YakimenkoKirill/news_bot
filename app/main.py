@@ -23,6 +23,7 @@ from app.bot.handlers import keywords as keywords_handlers
 from app.bot.handlers import moderation as moderation_handlers
 from app.bot.handlers import queue as queue_handlers
 from app.bot.handlers import report as report_handlers
+from app.bot.handlers import settings as settings_handlers
 from app.bot.handlers import source_add as source_add_handlers
 from app.bot.handlers import sources as sources_handlers
 from app.bot.handlers import status as status_handlers
@@ -31,6 +32,7 @@ from app.bot.handlers.errors import MUTED_KINDS_SETTING, ErrorsDeps
 from app.bot.handlers.keywords import KeywordsDeps
 from app.bot.handlers.moderation import ModerationDeps
 from app.bot.handlers.queue import QueueDeps
+from app.bot.handlers.settings import SettingsDeps
 from app.bot.handlers.source_add import SourceAddDeps
 from app.bot.handlers.sources import SourcesDeps
 from app.bot.handlers.status import StatusDeps
@@ -465,6 +467,7 @@ def build_components(settings: Settings) -> list[Component]:
                 queue_handlers.create_router(),
                 errors_handlers.create_router(),
                 report_handlers.create_router(),
+                settings_handlers.create_router(),
             ],
             workflow_data={
                 "status_deps": StatusDeps(
@@ -547,6 +550,7 @@ def build_components(settings: Settings) -> list[Component]:
                     clock=lambda: datetime.now(UTC),
                 ),
                 "report_deps": report_deps,
+                "settings_deps": SettingsDeps(runtime=runtime, cache_s=settings.runtime.cache_s),
             },
         )
     )

@@ -25,3 +25,9 @@ class EditPost(StatesGroup):
     """Редактирование пересказа поста на модерации."""
 
     summary = State()
+
+
+class EditSetting(StatesGroup):
+    """Ввод нового значения параметра в /settings."""
+
+    value = State()

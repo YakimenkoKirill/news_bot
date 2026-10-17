@@ -11,6 +11,7 @@ COMMANDS: dict[str, str] = {
     "queue": "подготовленные посты, публикация вне очереди",
     "errors": "журнал ошибок, упавшие новости",
     "report": "отчёт за день, вчера или неделю",
+    "settings": "параметры канала без перезапуска",
     "pause": "приостановить обработку и публикацию",
     "resume": "возобновить работу",
     "sources": "источники: включить, выключить, удалить, проверить",
@@ -258,3 +259,46 @@ STATUS_NO_ERRORS = "Открытых ошибок нет"
 
 REPORT_BUILDING = "Считаю…"
 REPORT_FAILED = "Не удалось собрать отчёт, подробности в /errors"
+
+
+SETTINGS_CODES: dict[str, str] = {
+    "topic": "channel.topic",
+    "score": "ai.min_score",
+    "interval": "publisher.min_interval_min",
+    "quiet": "publisher.quiet_hours",
+    "limit": "publisher.max_queued_per_source",
+    "decay": "publisher.score_decay_per_h",
+}
+SETTINGS_LABELS = {
+    "topic": "Тема канала",
+    "score": "Порог интереса",
+    "interval": "Интервал постов",
+    "quiet": "Тихие часы",
+    "limit": "Лимит источника",
+    "decay": "Старение оценки",
+}
+SETTINGS_PRESETS: dict[str, tuple[tuple[str, str], ...]] = {
+    "score": (("0.5", "0.5"), ("0.6", "0.6"), ("0.7", "0.7")),
+    "decay": (("0", "0 — без старения"), ("0.02", "0.02"), ("0.05", "0.05")),
+    "quiet": (("", "Выключить"),),
+}
+SETTINGS_TITLE = "<b>Параметры канала</b>"
+SETTINGS_HINT = "Меняются без перезапуска: новое значение действует не позже {cache_s} с."
+SETTINGS_CHANGED = " · изменено (в конфиге {default})"
+SETTINGS_RESET_BUTTON = "↩️ Как в конфиге"
+SETTINGS_LIST_BUTTON = "◀️ К списку"
+SETTINGS_ASK = (
+    "<b>{label}</b>\nСейчас: {value}\nДопустимо: {hint}\n\n"
+    "Пришлите новое значение сообщением или нажмите кнопку. Выйти — /cancel."
+)
+SETTINGS_SAVED = "✅ {label}: {value}"
+SETTINGS_RESTORED = "↩️ {label} снова как в конфиге: {value}"
+SETTINGS_FAILED = "❌ Не сохранил: {error}\nПришлите другое значение или /cancel."
+SETTINGS_UNKNOWN = "Параметр не найден — откройте /settings заново."
+SETTINGS_EMPTY_VALUE = "пусто"
+
+
+def settings_line(label: str, value: str, default: str | None) -> str:
+    """Строка списка параметров; default не None — значение переопределено."""
+    changed = SETTINGS_CHANGED.format(default=default) if default is not None else ""
+    return f"• <b>{label}</b>: {value}{changed}"
