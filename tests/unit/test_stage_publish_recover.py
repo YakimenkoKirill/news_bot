@@ -70,7 +70,9 @@ class Sender:
     def __init__(self) -> None:
         self.calls: list[FittedPost] = []
 
-    async def send(self, fitted: FittedPost, image_url: str | None, link: str | None = None) -> int:
+    async def send(
+        self, fitted: FittedPost, photo: str | bytes | None, link: str | None = None
+    ) -> int:
         self.calls.append(fitted)
         return 9001
 

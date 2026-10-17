@@ -8,9 +8,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any, Protocol
@@ -26,7 +26,7 @@ from app.domain.enums import NewsStatus, PublicationStatus
 from app.logging import bind_context
 from app.publisher.formatter import PostNews, PostSource, build_post
 from app.publisher.limits import FittedPost, fit_post
-from app.publisher.media import ImageCheck
+from app.publisher.media import ImageCheck, PhotoFetcher
 from app.publisher.publisher import PublishError
 from app.publisher.slots import next_slot
 
@@ -49,6 +49,11 @@ class QueuedNews(PostNews, Protocol):
     id: int
     source_id: int
     status: NewsStatus
+
+    @property
+    def raw_meta(self) -> Mapping[str, Any]:
+        """Служебные данные сборщика (msg_id и has_photo для фото Telegram)."""
+        raise NotImplementedError
 
 
 class PublishNewsRepo(Protocol):
@@ -126,7 +131,9 @@ class SettingsGetter(Protocol):
 class PostSender(Protocol):
     """Отправка в канал (Publisher подходит структурно)."""
 
-    async def send(self, fitted: FittedPost, image_url: str | None, link: str | None = None) -> int:
+    async def send(
+        self, fitted: FittedPost, photo: str | bytes | None, link: str | None = None
+    ) -> int:
         """Отправляет пост и возвращает message_id."""
         raise NotImplementedError
 
@@ -148,15 +155,19 @@ class PostSnapshot:
 
 @dataclass
 class NewsSnapshot:
-    """Новость, снятая с ORM (структурно подходит PostNews).
+    """Новость, снятая с ORM (структурно подходит PostNews и PhotoNews).
 
     Attributes:
         url: Адрес источника новости.
         image_url: Картинка новости.
+        source_id: Источник новости.
+        raw_meta: Служебные данные сборщика (для фото из Telegram).
     """
 
     url: str
     image_url: str | None
+    source_id: int = 0
+    raw_meta: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -197,6 +208,7 @@ class PublishDeps:
         session_scope: Открывает транзакцию БД.
         news_repo, post_repo, source_repo, publication_repo, settings_repo: Репозитории.
         check_image: Проверка картинки по URL (check_image с HTTP-клиентом).
+        photo_fetcher: Загрузка фото из Telegram-источника; None — только по URL.
         publisher: Отправка в канал.
         sink: Получатель алертов.
         cfg: Секция publisher.
@@ -216,6 +228,7 @@ class PublishDeps:
     cfg: PublisherConfig
     channel_id: int
     tz: str | ZoneInfo
+    photo_fetcher: PhotoFetcher | None = None
 
 
 @dataclass(frozen=True)
@@ -307,7 +320,12 @@ async def _claim_for_send(
         post=PostSnapshot(
             ai_title=post.ai_title, ai_summary=post.ai_summary, hashtags=list(post.hashtags)
         ),
-        news=NewsSnapshot(url=item.url, image_url=item.image_url),
+        news=NewsSnapshot(
+            url=item.url,
+            image_url=item.image_url,
+            source_id=item.source_id,
+            raw_meta=dict(item.raw_meta or {}),
+        ),
         source=SourceSnapshot(name=source.name),
     )
 
@@ -331,13 +349,11 @@ async def _send_claimed(
     Returns:
         Отчёт о публикации.
     """
-    image = await deps.check_image(claimed.news.image_url)
-    if not image.ok:
-        log.info("publish.image_skipped", reason=image.reason)
+    photo = await _photo(claimed, deps)
     post = build_post(claimed.post, claimed.news, claimed.source, deps.cfg)
-    fitted = fit_post(post, has_photo=image.ok, cfg=deps.cfg)
+    fitted = fit_post(post, has_photo=photo is not None, cfg=deps.cfg)
     try:
-        message_id = await deps.publisher.send(fitted, claimed.news.image_url)
+        message_id = await deps.publisher.send(fitted, photo)
     except PublishError as exc:
         await _record_failure(claimed, exc, now, deps, initiated_by)
         return PublishReport(news_id=claimed.news_id, error=str(exc))
@@ -358,6 +374,36 @@ async def _send_claimed(
         )
     log.info("publish.sent", message_id=message_id, with_photo=fitted.use_photo)
     return PublishReport(news_id=claimed.news_id, message_id=message_id)
+
+
+async def _photo(claimed: ClaimedPost, deps: PublishDeps) -> str | bytes | None:
+    """Картинка поста: проверенный URL или фото из Telegram-источника.
+
+    У новостей из Telegram публичного адреса картинки нет, поэтому фото
+    скачивается из исходного сообщения. Любая ошибка загрузки оставляет пост
+    без фото: текст важнее картинки.
+
+    Args:
+        claimed: Данные захваченного поста.
+        deps: Зависимости стадии публикации.
+
+    Returns:
+        Адрес картинки, байты фото или None.
+    """
+    url = claimed.news.image_url
+    if url:
+        image = await deps.check_image(url)
+        if image.ok:
+            return url
+        log.info("publish.image_skipped", reason=image.reason)
+        return None
+    if deps.photo_fetcher is None:
+        return None
+    try:
+        return await deps.photo_fetcher.fetch(claimed.news)
+    except Exception as exc:
+        log.warning("publish.tg_photo_failed", error=repr(exc))
+        return None
 
 
 async def _record_failure(

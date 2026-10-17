@@ -1,18 +1,20 @@
-"""Проверка картинки перед отправкой в Telegram по URL."""
+"""Картинка поста: проверка URL и загрузка фото из Telegram-источника."""
 
 from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from http import HTTPStatus
+from typing import Any, Protocol
 
 import structlog
 
 from app.collectors.base import PermanentCollectorError, TemporaryCollectorError
 from app.collectors.http import HttpClient, HttpResponse, HttpStatusError
 from app.config import PublisherConfig
+from app.domain.enums import SourceType
 
 log = structlog.get_logger(__name__)
 
@@ -25,12 +27,90 @@ OK_STATUSES = frozenset({HTTPStatus.OK, HTTPStatus.PARTIAL_CONTENT})
 _CONTENT_RANGE_TOTAL = re.compile(r"/(\d+)\s*$")
 
 
+HAS_PHOTO_KEY = "has_photo"
+MSG_ID_KEY = "msg_id"
+
+
 @dataclass(frozen=True)
 class ImageCheck:
     """Результат проверки: подходит ли картинка и почему нет."""
 
     ok: bool
     reason: str | None = None
+
+
+class PhotoNews(Protocol):
+    """Новость, у которой может быть фото в Telegram (NewsItem подходит)."""
+
+    @property
+    def source_id(self) -> int:
+        """Источник новости."""
+        raise NotImplementedError
+
+    @property
+    def raw_meta(self) -> Mapping[str, Any]:
+        """Служебные данные сборщика: msg_id, has_photo и прочее."""
+        raise NotImplementedError
+
+
+class PhotoSource(Protocol):
+    """Источник новости (Source подходит структурно)."""
+
+    @property
+    def type(self) -> SourceType:
+        """Вид источника."""
+        raise NotImplementedError
+
+    @property
+    def url(self) -> str:
+        """Адрес источника."""
+        raise NotImplementedError
+
+
+class PhotoFetcher(Protocol):
+    """Загрузка фото новости, у которой нет публичного URL картинки."""
+
+    async def fetch(self, news: PhotoNews) -> bytes | None:
+        """Байты фото или None, если фото нет."""
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class TelegramPhotoFetcher:
+    """Фото из исходного сообщения Telegram-канала.
+
+    У фото в Telegram нет публичного адреса, поэтому его приходится скачивать
+    через Telethon. Для источников другого вида и сообщений без фото загрузка
+    не запускается.
+
+    Attributes:
+        download: TelegramCollector.download_photo.
+        source: Источник новости по source_id (своя короткая транзакция).
+        max_bytes: Предел размера файла (publisher.image_max_bytes).
+    """
+
+    download: Callable[[str, int, int], Awaitable[bytes | None]]
+    source: Callable[[int], Awaitable[PhotoSource | None]]
+    max_bytes: int
+
+    async def fetch(self, news: PhotoNews) -> bytes | None:
+        """Скачивает фото сообщения, из которого собрана новость.
+
+        Args:
+            news: Новость с raw_meta сборщика.
+
+        Returns:
+            Байты фото или None, если фото нет, источник не Telegram или файл
+            слишком большой.
+        """
+        meta = news.raw_meta or {}
+        msg_id = meta.get(MSG_ID_KEY)
+        if not meta.get(HAS_PHOTO_KEY) or not isinstance(msg_id, int):
+            return None
+        source = await self.source(news.source_id)
+        if source is None or source.type is not SourceType.TG:
+            return None
+        return await self.download(source.url, msg_id, self.max_bytes)
 
 
 def _content_type(headers: Mapping[str, str]) -> str | None:

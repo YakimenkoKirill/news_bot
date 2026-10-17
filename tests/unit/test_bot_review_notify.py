@@ -30,6 +30,7 @@ class News:
     source_id: int = 1
     url: str = "https://src.example/a"
     image_url: str | None = "https://cdn.example/a.jpg"
+    raw_meta: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

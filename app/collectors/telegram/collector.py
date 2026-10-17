@@ -92,14 +92,19 @@ class _Channel:
     entity: Any
 
 
-def channel_username(source: Source) -> str:
-    """Username канала из url источника (https://t.me/name, @name или name)."""
-    value = source.url.strip()
+def username_from_url(url: str) -> str:
+    """Username канала из адреса (https://t.me/name, @name или name)."""
+    value = url.strip()
     for prefix in TME_PREFIXES:
         if value.lower().startswith(prefix):
             value = value[len(prefix) :]
             break
     return value.lstrip("@").split("/")[0].split("?")[0]
+
+
+def channel_username(source: Source) -> str:
+    """Username канала из url источника (https://t.me/name, @name или name)."""
+    return username_from_url(source.url)
 
 
 def _reactions_count(message: Any) -> int:
@@ -304,6 +309,48 @@ class TelegramCollector:
                 collected[int(message.id)] = post_stats(message)
         log.info("stats.fetched", channel_id=channel_id, requested=len(ids), got=len(collected))
         return collected
+
+    async def download_photo(self, source_url: str, msg_id: int, max_bytes: int) -> bytes | None:
+        """Скачивает фото сообщения канала-источника.
+
+        Для альбома msg_id указывает на первую часть: её фото и попадает в пост
+        (raw_meta.photo_ids — это идентификаторы самих фото, запросить сообщение
+        по ним нельзя). Сообщение без фото, удалённое сообщение и файл больше
+        max_bytes дают None.
+
+        Args:
+            source_url: Адрес источника (https://t.me/name).
+            msg_id: Id сообщения в канале.
+            max_bytes: Предел размера файла (publisher.image_max_bytes).
+
+        Returns:
+            Байты фото или None, если фото нет или оно слишком большое.
+
+        Raises:
+            TemporaryCollectorError: Telegram просит ждать слишком долго.
+        """
+        username = username_from_url(source_url)
+
+        async def get_message() -> Any:
+            messages = await self._client.get_messages(username, ids=[msg_id])
+            return (list(messages or []) or [None])[0]
+
+        message = await with_flood_wait(get_message, self._config)
+        if message is None or getattr(message, "photo", None) is None:
+            log.info("telegram.photo_missing", msg_id=msg_id, username=username)
+            return None
+
+        async def download() -> Any:
+            return await self._client.download_media(message, file=bytes)
+
+        data = await with_flood_wait(download, self._config)
+        if not isinstance(data, bytes | bytearray):
+            log.info("telegram.photo_not_downloaded", msg_id=msg_id)
+            return None
+        if len(data) > max_bytes:
+            log.info("telegram.photo_too_large", msg_id=msg_id, size=len(data))
+            return None
+        return bytes(data)
 
     async def _stats_entity(self, channel_id: int) -> Any:
         async def get_entity() -> Any:

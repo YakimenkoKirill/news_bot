@@ -73,7 +73,7 @@ from app.pipeline.queue_limit import QueueAdmission, QueueLimitRepos, trim_queue
 from app.pipeline.retry import RetryDeps
 from app.pipeline.stage_ai import AiStageDeps, process_normalized_batch
 from app.pipeline.stage_normalize import NormalizeDeps, process_new_batch
-from app.publisher.media import ImageCheck, check_image
+from app.publisher.media import ImageCheck, PhotoSource, TelegramPhotoFetcher, check_image
 from app.publisher.publisher import Publisher
 from app.publisher.stage_publish import (
     PAUSED_SETTING,
@@ -250,6 +250,16 @@ def build_components(settings: Settings) -> list[Component]:
     async def image_check(url: str | None) -> ImageCheck:
         return await check_image(url, http, settings.publisher)
 
+    async def source_of(source_id: int) -> PhotoSource | None:
+        async with scope() as session:
+            return await SourceRepository(session).get(source_id)
+
+    photo_fetcher = TelegramPhotoFetcher(
+        download=telegram.download_photo,
+        source=source_of,
+        max_bytes=settings.publisher.image_max_bytes,
+    )
+
     notifier = BotReviewNotifier(
         bot,
         ReviewNotifierDeps(
@@ -260,6 +270,7 @@ def build_components(settings: Settings) -> list[Component]:
             admin_ids=admins.ids,
             check_image=image_check,
             cfg=settings.publisher,
+            photo_fetcher=photo_fetcher,
         ),
     )
     budget = BudgetGuard(_SessionCost(scope), alerts, settings.ai, tz)
@@ -319,6 +330,7 @@ def build_components(settings: Settings) -> list[Component]:
         cfg=settings.publisher,
         channel_id=settings.telegram_channel_id,
         tz=tz,
+        photo_fetcher=photo_fetcher,
     )
     manual_deps = ManualPublishDeps(publish=publish_deps, news_repo=NewsRepository)
     stats_deps = StatsDeps(
@@ -335,6 +347,7 @@ def build_components(settings: Settings) -> list[Component]:
         source_repo=SourceRepository,
         check_image=image_check,
         cfg=settings.publisher,
+        photo_fetcher=photo_fetcher,
     )
 
     async def is_paused(session: AsyncSession) -> bool:

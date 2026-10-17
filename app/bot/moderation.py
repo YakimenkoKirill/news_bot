@@ -24,7 +24,7 @@ from app.bot.preview import (
 from app.bot.screen import new_screen
 from app.config import PublisherConfig
 from app.db.models import ProcessedPost
-from app.publisher.media import ImageCheck
+from app.publisher.media import ImageCheck, PhotoFetcher
 
 log = structlog.get_logger(__name__)
 
@@ -60,6 +60,7 @@ class ReviewNotifierDeps:
         news_repo, source_repo, post_repo: Репозитории для сессии.
         admin_ids: Возвращает Telegram ID всех администраторов.
         check_image: Проверка картинки (та же, что при публикации).
+        photo_fetcher: Загрузка фото из Telegram-источника; None — только по URL.
         cfg: Секция publisher (лимиты длины поста).
     """
 
@@ -70,6 +71,7 @@ class ReviewNotifierDeps:
     admin_ids: Callable[[], Awaitable[Sequence[int]]]
     check_image: Callable[[str | None], Awaitable[ImageCheck]]
     cfg: PublisherConfig
+    photo_fetcher: PhotoFetcher | None = None
 
 
 class BotReviewNotifier:
@@ -88,6 +90,7 @@ class BotReviewNotifier:
             source_repo=deps.source_repo,
             check_image=deps.check_image,
             cfg=deps.cfg,
+            photo_fetcher=deps.photo_fetcher,
         )
 
     async def notify(self, post: ProcessedPost) -> None:

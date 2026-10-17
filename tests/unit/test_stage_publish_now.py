@@ -48,6 +48,7 @@ class News:
     published_at: datetime | None = None
     updated_at: datetime = NOON
     cluster_sources: int = 1
+    raw_meta: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -161,12 +162,14 @@ class SettingsRepo:
 class Sender:
     def __init__(self, error: Exception | None = None) -> None:
         self.error = error
-        self.calls: list[tuple[FittedPost, str | None, str | None]] = []
+        self.calls: list[tuple[FittedPost, str | bytes | None, str | None]] = []
         self.open_scopes: list[int] = []
         self.db: Db | None = None
 
-    async def send(self, fitted: FittedPost, image_url: str | None, link: str | None = None) -> int:
-        self.calls.append((fitted, image_url, link))
+    async def send(
+        self, fitted: FittedPost, photo: str | bytes | None, link: str | None = None
+    ) -> int:
+        self.calls.append((fitted, photo, link))
         if self.db is not None:
             self.open_scopes.append(self.db.open_scopes)
         if self.error:

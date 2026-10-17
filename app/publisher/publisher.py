@@ -9,7 +9,7 @@ from typing import Any
 import structlog
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramRetryAfter
-from aiogram.types import LinkPreviewOptions
+from aiogram.types import BufferedInputFile, LinkPreviewOptions
 from tenacity import (
     AsyncRetrying,
     RetryCallState,
@@ -24,6 +24,19 @@ from app.publisher.limits import FittedPost
 log = structlog.get_logger(__name__)
 
 Sleep = Callable[[float], Awaitable[None]]
+PHOTO_FILENAME = "photo.jpg"
+
+
+def as_input_photo(photo: str | bytes) -> str | BufferedInputFile:
+    """Готовит картинку для aiogram: байты — файлом, строка — адресом."""
+    if isinstance(photo, bytes):
+        return BufferedInputFile(photo, filename=PHOTO_FILENAME)
+    return photo
+
+
+def _photo_log(photo: str | bytes) -> str:
+    """Короткое описание картинки для логов (байты не логируем целиком)."""
+    return f"{len(photo)} байт" if isinstance(photo, bytes) else photo
 
 
 class PublishError(RuntimeError):
@@ -50,12 +63,15 @@ class Publisher:
         self._cfg = cfg
         self._sleep = sleep
 
-    async def send(self, fitted: FittedPost, image_url: str | None, link: str | None = None) -> int:
+    async def send(
+        self, fitted: FittedPost, photo: str | bytes | None, link: str | None = None
+    ) -> int:
         """Отправляет пост и возвращает message_id.
 
         Args:
             fitted: Пост, уложенный в лимит (fit_post).
-            image_url: Картинка (используется при fitted.use_photo).
+            photo: Картинка (используется при fitted.use_photo): адрес или байты
+                фото, скачанного из Telegram-источника.
             link: Ссылка на источник для превью текстового поста.
 
         Returns:
@@ -64,11 +80,11 @@ class Publisher:
         Raises:
             PublishError: Telegram отклонил пост или повторы исчерпаны.
         """
-        if fitted.use_photo and image_url:
+        if fitted.use_photo and photo:
             try:
-                return await self._with_retry(lambda: self._send_photo(fitted, image_url))
+                return await self._with_retry(lambda: self._send_photo(fitted, photo))
             except TelegramBadRequest as exc:
-                log.warning("publisher.photo_rejected", error=exc.message, image_url=image_url)
+                log.warning("publisher.photo_rejected", error=exc.message, photo=_photo_log(photo))
             except TelegramAPIError as exc:
                 raise PublishError(f"Telegram отклонил пост: {exc.message}") from exc
         try:
@@ -76,10 +92,10 @@ class Publisher:
         except TelegramAPIError as exc:
             raise PublishError(f"Telegram отклонил пост: {exc.message}") from exc
 
-    async def _send_photo(self, fitted: FittedPost, image_url: str) -> int:
+    async def _send_photo(self, fitted: FittedPost, photo: str | bytes) -> int:
         message = await self._bot.send_photo(
             chat_id=self._channel_id,
-            photo=image_url,
+            photo=as_input_photo(photo),
             caption=fitted.html,
             parse_mode=ParseMode.HTML,
         )

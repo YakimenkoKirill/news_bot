@@ -5,6 +5,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+import structlog.testing
+
 from app.config import PublisherConfig
 from app.db.models import ProcessedPost, Publication
 from app.db.repositories.news import Priority, StuckRef
@@ -35,6 +37,7 @@ class News:
     published_at: datetime | None = None
     updated_at: datetime = NOON
     cluster_sources: int = 1
+    raw_meta: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -134,12 +137,14 @@ class SettingsRepo:
 class Sender:
     def __init__(self, error: Exception | None = None) -> None:
         self.error = error
-        self.calls: list[tuple[FittedPost, str | None, str | None]] = []
+        self.calls: list[tuple[FittedPost, str | bytes | None, str | None]] = []
         self.open_scopes: list[int] = []
         self.db: Db | None = None
 
-    async def send(self, fitted: FittedPost, image_url: str | None, link: str | None = None) -> int:
-        self.calls.append((fitted, image_url, link))
+    async def send(
+        self, fitted: FittedPost, photo: str | bytes | None, link: str | None = None
+    ) -> int:
+        self.calls.append((fitted, photo, link))
         if self.db is not None:
             self.open_scopes.append(self.db.open_scopes)
         if self.error:
@@ -304,10 +309,10 @@ async def test_status_scheduled_while_sending() -> None:
 
     class Watching(Sender):
         async def send(
-            self, fitted: FittedPost, image_url: str | None, link: str | None = None
+            self, fitted: FittedPost, photo: str | bytes | None, link: str | None = None
         ) -> int:
             seen.append(env.db.news[1].status)
-            return await super().send(fitted, image_url, link)
+            return await super().send(fitted, photo, link)
 
     watching = Watching()
     watching.db = env.db
@@ -359,11 +364,84 @@ async def test_send_error_marks_failed_and_alerts() -> None:
     assert event.kind is AlertKind.PUBLISH_ERROR
 
 
+class Fetcher:
+    """Загрузка фото из Telegram-источника."""
+
+    def __init__(
+        self, photo: bytes | None = b"photo-bytes", error: Exception | None = None
+    ) -> None:
+        self.photo = photo
+        self.error = error
+        self.calls: list[int] = []
+
+    async def fetch(self, news: Any) -> bytes | None:
+        self.calls.append(news.source_id)
+        if self.error is not None:
+            raise self.error
+        return self.photo
+
+
+async def test_telegram_photo_used_without_image_url() -> None:
+    """У новости из Telegram нет URL картинки: фото скачивается и уходит файлом."""
+    env = _env([News(1, image_url=None)])
+    fetcher = Fetcher()
+    deps = replace(env.deps, photo_fetcher=fetcher)
+
+    assert (await publish_due(NOON, deps)).message_id == 9001
+
+    fitted, photo, _ = env.sender.calls[0]
+    assert photo == b"photo-bytes"
+    assert fitted.use_photo is True
+    assert fetcher.calls == [1]
+    assert env.image_checks == [], "проверка по URL не нужна"
+
+
+async def test_fetcher_not_called_when_image_url_present() -> None:
+    env = _env([News(1)])
+    fetcher = Fetcher()
+    await publish_due(NOON, replace(env.deps, photo_fetcher=fetcher))
+
+    _, photo, _ = env.sender.calls[0]
+    assert photo == "https://cdn.example/a.jpg"
+    assert fetcher.calls == []
+    assert env.image_checks == ["https://cdn.example/a.jpg"]
+
+
+async def test_photo_download_error_publishes_text() -> None:
+    env = _env([News(1, image_url=None)])
+    fetcher = Fetcher(error=RuntimeError("Telethon отключён"))
+
+    with structlog.testing.capture_logs() as logs:
+        report = await publish_due(NOON, replace(env.deps, photo_fetcher=fetcher))
+
+    assert report.message_id == 9001
+    fitted, photo, _ = env.sender.calls[0]
+    assert photo is None
+    assert fitted.use_photo is False
+    assert [e for e in logs if e["event"] == "publish.tg_photo_failed"]
+
+
+async def test_no_photo_without_fetcher() -> None:
+    env = _env([News(1, image_url=None)])
+    assert (await publish_due(NOON, env.deps)).message_id == 9001
+    fitted, photo, _ = env.sender.calls[0]
+    assert (photo, fitted.use_photo) == (None, False)
+
+
+async def test_fetcher_without_photo_publishes_text() -> None:
+    env = _env([News(1, image_url=None)])
+    fetcher = Fetcher(photo=None)
+    assert (await publish_due(NOON, replace(env.deps, photo_fetcher=fetcher))).message_id == 9001
+    fitted, photo, _ = env.sender.calls[0]
+    assert (photo, fitted.use_photo) == (None, False)
+
+
 async def test_bad_image_published_without_photo() -> None:
     env = _env([News(1)], image_ok=False)
     await publish_due(NOON, env.deps)
-    fitted, _, _ = env.sender.calls[0]
+    fitted, photo, _ = env.sender.calls[0]
     assert fitted.use_photo is False
+    assert photo is None, "неподходящая картинка не уходит в Telegram"
     assert env.image_checks == ["https://cdn.example/a.jpg"]
 
 
