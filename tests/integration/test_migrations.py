@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Callable, Iterator
+from decimal import Decimal
 from typing import Any, TypeVar
 
 import pytest
@@ -8,7 +9,7 @@ from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
-from sqlalchemy import Connection, inspect, pool
+from sqlalchemy import Connection, inspect, pool, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 import app.db.models  # noqa: F401  регистрирует модели в Base.metadata
@@ -65,7 +66,7 @@ def test_repeated_upgrade_is_noop(clean_db: Config, test_database_url: str) -> N
     head = ScriptDirectory.from_config(clean_db).get_current_head()
     command.upgrade(clean_db, "head")
     command.upgrade(clean_db, "head")
-    assert _current_revision(test_database_url) == head == "0004"
+    assert _current_revision(test_database_url) == head == "0005"
 
 
 def test_news_items_indexes(clean_db: Config, test_database_url: str) -> None:
@@ -132,6 +133,88 @@ def test_bot_screens_added_in_0004(clean_db: Config, test_database_url: str) -> 
     command.downgrade(clean_db, "0003")
     assert "bot_screens" not in _table_names(test_database_url)
     assert _current_revision(test_database_url) == "0003"
+
+
+def test_ai_requests_added_in_0005(clean_db: Config, test_database_url: str) -> None:
+    command.upgrade(clean_db, "head")
+    assert "ai_requests" in _table_names(test_database_url)
+    columns = {
+        str(column["name"]): column
+        for column in _with_connection(
+            test_database_url, lambda conn: inspect(conn).get_columns("ai_requests")
+        )
+    }
+    assert set(columns) == {
+        "id",
+        "news_item_id",
+        "kind",
+        "model",
+        "prompt_tokens",
+        "cached_tokens",
+        "completion_tokens",
+        "cost",
+        "ok",
+        "created_at",
+    }
+    assert columns["news_item_id"]["nullable"] is True
+    indexes = _with_connection(
+        test_database_url, lambda conn: inspect(conn).get_indexes("ai_requests")
+    )
+    found = {str(index["name"]): index["column_names"] for index in indexes}
+    assert found["ix_ai_requests_created_at"] == ["created_at"]
+
+    command.downgrade(clean_db, "0004")
+    assert "ai_requests" not in _table_names(test_database_url)
+    assert _current_revision(test_database_url) == "0004"
+
+
+def test_0005_copies_history_from_processed_posts(clean_db: Config, test_database_url: str) -> None:
+    """История до миграции видна в отчёте: каждый пересказ превращается в запрос."""
+    command.upgrade(clean_db, "0004")
+
+    def seed(conn: Connection) -> None:
+        conn.execute(
+            text(
+                "INSERT INTO sources (type, url, name, interval_min) "
+                "VALUES ('rss', 'https://m.example/rss', 'M', 10)"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO news_items (source_id, external_id, url, title, raw_text, status) "
+                "SELECT id, '1', 'https://m.example/1', 't', 'r', 'processed' FROM sources"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO processed_posts (news_item_id, ai_title, ai_summary, "
+                "relevance_score, prompt_version, prompt_tokens, completion_tokens, cost, "
+                "created_at) SELECT id, 't', 's', 0.9, 'v1', 120, 40, 0.00042, "
+                "'2026-10-10T09:00:00+00:00' FROM news_items"
+            )
+        )
+        conn.commit()
+
+    _with_connection(test_database_url, seed)
+    command.upgrade(clean_db, "head")
+
+    def rows(conn: Connection) -> list[Any]:
+        return list(
+            conn.execute(
+                text(
+                    "SELECT news_item_id, kind, prompt_tokens, cached_tokens, "
+                    "completion_tokens, cost, ok, created_at FROM ai_requests"
+                )
+            ).all()
+        )
+
+    [row] = _with_connection(test_database_url, rows)
+    assert row.kind == "summary"
+    assert (row.prompt_tokens, row.cached_tokens, row.completion_tokens) == (120, 0, 40)
+    assert row.cost == Decimal("0.000420")
+    assert row.ok is True
+    assert row.created_at.isoformat() == "2026-10-10T09:00:00+00:00"
+    assert row.news_item_id is not None
 
 
 def test_autogenerate_finds_no_differences(clean_db: Config, test_database_url: str) -> None:

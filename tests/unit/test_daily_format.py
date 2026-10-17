@@ -106,7 +106,9 @@ def _full() -> DailyReport:
         spending=Spending(
             cost=Decimal("0.21"),
             requests=62,
+            failed=3,
             prompt_tokens=45200,
+            cached_tokens=11300,
             completion_tokens=18300,
             budget_share=0.42,
             cost_per_post=Decimal("0.0175"),
@@ -261,6 +263,23 @@ def test_spending_block() -> None:
     assert "Стоимость поста: $0.0175" in text
     assert "С начала месяца: $3.4" in text
     assert "⚠️" not in text.split("<b>Качество</b>")[0].split("<b>Модель</b>")[1]
+
+
+def test_cache_and_failed_requests_in_spending_block() -> None:
+    text = _text(_full())
+    assert "Из кэша 25% входных токенов" in text
+    assert "Неудачных запросов: 3" in text
+
+
+def test_cache_line_hidden_without_input_tokens() -> None:
+    model_block = _text(_report(spending=Spending(requests=0))).split("<b>Модель</b>")[1]
+    assert "Из кэша" not in model_block
+    assert "Неудачных запросов" not in model_block
+
+
+def test_cache_line_shows_zero_share() -> None:
+    spending = Spending(prompt_tokens=1000, cached_tokens=0, requests=1)
+    assert "Из кэша 0% входных токенов" in _text(_report(spending=spending))
 
 
 def test_budget_warning_above_threshold() -> None:

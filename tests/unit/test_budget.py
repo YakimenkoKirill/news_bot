@@ -38,17 +38,41 @@ class FakeSink:
 
 
 def test_cost_exact_decimal() -> None:
-    assert cost(1_000_000, 0, CFG) == Decimal("0.256000")
-    assert cost(0, 1_000_000, CFG) == Decimal("1.020000")
-    assert cost(2_000, 300, CFG) == Decimal("0.000818")
-    assert cost(0, 0, CFG) == Decimal("0")
-    assert isinstance(cost(1, 1, CFG), Decimal)
+    assert cost(1_000_000, 0, 0, CFG) == Decimal("0.256000")
+    assert cost(0, 0, 1_000_000, CFG) == Decimal("1.020000")
+    assert cost(2_000, 0, 300, CFG) == Decimal("0.000818")
+    assert cost(0, 0, 0, CFG) == Decimal("0")
+    assert isinstance(cost(1, 0, 1, CFG), Decimal)
 
 
 def test_cost_rounds_to_column_scale() -> None:
-    assert cost(1, 0, CFG) == Decimal("0.000000")
-    assert cost(3, 0, CFG) == Decimal("0.000001")
-    assert cost(1, 0, CFG).as_tuple().exponent == -6
+    assert cost(1, 0, 0, CFG) == Decimal("0.000000")
+    assert cost(3, 0, 0, CFG) == Decimal("0.000001")
+    assert cost(1, 0, 0, CFG).as_tuple().exponent == -6
+
+
+def test_cached_tokens_use_cache_price() -> None:
+    cfg = CFG.model_copy(update={"price_input_cached_per_1m": 0.026})
+    assert cfg.price_input_cached_per_1m == 0.026
+    assert cost(1_000_000, 1_000_000, 0, cfg) == Decimal("0.026000")
+    assert cost(1_000_000, 400_000, 0, cfg) == Decimal("0.164000")
+
+
+def test_cached_tokens_without_price_cost_as_usual() -> None:
+    """Ключ price_input_cached_per_1m не задан: кэш стоит как обычный вход."""
+    assert CFG.price_input_cached_per_1m is None
+    assert cost(1_000_000, 1_000_000, 0, CFG) == cost(1_000_000, 0, 0, CFG)
+
+
+def test_cached_tokens_not_greater_than_prompt() -> None:
+    cfg = CFG.model_copy(update={"price_input_cached_per_1m": 0.0})
+    assert cost(1_000, 10_000, 0, cfg) == Decimal("0")
+    assert cost(1_000, -5, 0, cfg) == cost(1_000, 0, 0, cfg)
+
+
+def test_free_cache_price_allowed() -> None:
+    cfg = CFG.model_copy(update={"price_input_cached_per_1m": 0.0})
+    assert cost(1_000_000, 1_000_000, 1_000_000, cfg) == Decimal("1.020000")
 
 
 async def test_under_budget_returns_spent() -> None:

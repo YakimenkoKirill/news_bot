@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.collectors.base import BaseCollector, RawItem
 from app.db.models import ProcessedPost, Source
-from app.db.repositories.posts import ProcessedPostRepository
+from app.db.repositories.ai_requests import AiRequestRepository
 from app.domain.alerts import AlertEvent
 from app.pipeline.ai.client import AiRawResponse, Message
 from app.publisher.media import ImageCheck
@@ -101,7 +101,7 @@ class SessionCost:
 
     async def cost_since(self, dt: datetime) -> Decimal:
         async with self.scope() as session:
-            return await ProcessedPostRepository(session).cost_since(dt)
+            return await AiRequestRepository(session).cost_since(dt)
 
 
 async def no_sleep(_: float) -> None:

@@ -184,6 +184,11 @@ def _spending_block(report: DailyReport, cfg: DailyReportConfig, budget: Decimal
         f"Запросов: {spending.requests} · токены "
         f"{_thousands(spending.prompt_tokens)} / {_thousands(spending.completion_tokens)}",
     ]
+    cached_share = spending.cached_share
+    if cached_share is not None:
+        lines.append(f"Из кэша {cached_share * PERCENT:.0f}% входных токенов")
+    if spending.failed:
+        lines.append(f"Неудачных запросов: {spending.failed}")
     if spending.cost_per_post is not None:
         lines.append(f"Стоимость поста: {_money(spending.cost_per_post)}")
     lines.append(f"С начала месяца: {_money(spending.month_to_date)}")

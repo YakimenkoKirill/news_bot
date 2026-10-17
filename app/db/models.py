@@ -234,6 +234,31 @@ class Incident(Base):
     resolved_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
+class AiRequest(Base):
+    """Один запрос к модели: токены, кэш и стоимость.
+
+    Пишется на каждую попытку, в том числе неудачную, поэтому сумма cost за сутки
+    равна реально оплаченному — в отличие от processed_posts.cost, где нет новостей,
+    по которым модель так и не дала разбираемый ответ.
+    """
+
+    __tablename__ = "ai_requests"
+    __table_args__ = (Index("ix_ai_requests_created_at", "created_at"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    news_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("news_items.id", ondelete="SET NULL"), nullable=True
+    )
+    kind: Mapped[str] = mapped_column(String(16))
+    model: Mapped[str] = mapped_column(String(64))
+    prompt_tokens: Mapped[int] = mapped_column(Integer)
+    cached_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    completion_tokens: Mapped[int] = mapped_column(Integer)
+    cost: Mapped[Decimal] = mapped_column(Numeric(COST_PRECISION, COST_SCALE))
+    ok: Mapped[bool] = mapped_column(Boolean)
+    created_at: Mapped[datetime] = mapped_column(_tz(), server_default=func.now())
+
+
 class BotScreen(Base):
     """Текущий экран чата с ботом: сообщения, которые висят у администратора.
 

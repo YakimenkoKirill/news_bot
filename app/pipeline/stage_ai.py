@@ -22,6 +22,7 @@ from app.pipeline.ai.client import AiFatalError, AiUnavailableError
 from app.pipeline.ai.processor import (
     REASON_BAD_AI_RESPONSE,
     AiRepos,
+    AiRequestRepo,
     ModeratedSource,
     PostRepo,
     ProcessableNews,
@@ -105,6 +106,7 @@ class AiStageDeps:
         news_repo: Репозиторий новостей для сессии.
         source_repo: Репозиторий источников для сессии.
         post_repo: Репозиторий пересказов для сессии.
+        request_repo: Репозиторий запросов к модели для сессии.
         settings_repo: Репозиторий настроек для сессии.
         processor: Создаёт обработчик новости для репозиториев одной сессии.
         budget: Проверка дневного бюджета.
@@ -119,6 +121,7 @@ class AiStageDeps:
     news_repo: Callable[[Any], AiNewsRepo]
     source_repo: Callable[[Any], SourceGetter]
     post_repo: Callable[[Any], AiPostRepo]
+    request_repo: Callable[[Any], AiRequestRepo]
     settings_repo: Callable[[Any], SettingsGetter]
     processor: Callable[[AiRepos], NewsProcessor]
     budget: BudgetChecker
@@ -254,7 +257,12 @@ async def _process_one(item: ClaimableNews, now: datetime, deps: AiStageDeps) ->
                 else None
             )
             processor = deps.processor(
-                AiRepos(news=deps.news_repo(session), posts=posts, admit=admit)
+                AiRepos(
+                    news=deps.news_repo(session),
+                    posts=posts,
+                    requests=deps.request_repo(session),
+                    admit=admit,
+                )
             )
             status = await processor.process(item, source)
             if status is NewsStatus.PENDING_REVIEW:

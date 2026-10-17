@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Incident, NewsItem, ProcessedPost, Publication, Source
+from app.db.models import AiRequest, Incident, NewsItem, ProcessedPost, Publication, Source
 from app.domain.enums import NewsStatus, PublicationStatus
 from app.pipeline.ai.processor import REASON_NOT_RELEVANT
 from app.pipeline.queue_limit import REASON_QUEUE_LIMIT
@@ -115,15 +115,39 @@ class Funnel:
 
 @dataclass(frozen=True)
 class Spending:
-    """Расход на модель за период."""
+    """Расход на модель за период.
+
+    Считается по ai_requests, то есть по каждому оплаченному запросу, включая
+    неудачные попытки, из-за которых пересказа так и не появилось.
+
+    Attributes:
+        cost: Расход за период.
+        requests: Сколько запросов ушло в модель.
+        failed: Из них неудачных (ответ не разобран).
+        prompt_tokens: Входные токены, включая кэшированные.
+        cached_tokens: Входные токены, оплаченные по цене кэша.
+        completion_tokens: Выходные токены.
+        budget_share: Доля дневного бюджета.
+        cost_per_post: Расход на один вышедший пост.
+        month_to_date: Расход с начала месяца.
+    """
 
     cost: Decimal = Decimal(0)
     requests: int = 0
+    failed: int = 0
     prompt_tokens: int = 0
+    cached_tokens: int = 0
     completion_tokens: int = 0
     budget_share: float | None = None
     cost_per_post: Decimal | None = None
     month_to_date: Decimal = Decimal(0)
+
+    @property
+    def cached_share(self) -> float | None:
+        """Доля входных токенов, пришедших из кэша; None — входных токенов не было."""
+        if not self.prompt_tokens:
+            return None
+        return self.cached_tokens / self.prompt_tokens
 
 
 @dataclass(frozen=True)
@@ -450,11 +474,13 @@ async def _spending(
     totals = (
         await session.execute(
             select(
-                func.coalesce(func.sum(ProcessedPost.cost), 0),
+                func.coalesce(func.sum(AiRequest.cost), 0),
                 func.count(),
-                func.coalesce(func.sum(ProcessedPost.prompt_tokens), 0),
-                func.coalesce(func.sum(ProcessedPost.completion_tokens), 0),
-            ).where(ProcessedPost.created_at >= period.start, ProcessedPost.created_at < period.end)
+                func.coalesce(func.sum(AiRequest.prompt_tokens), 0),
+                func.coalesce(func.sum(AiRequest.cached_tokens), 0),
+                func.coalesce(func.sum(AiRequest.completion_tokens), 0),
+                func.count().filter(AiRequest.ok.is_(False)),
+            ).where(AiRequest.created_at >= period.start, AiRequest.created_at < period.end)
         )
     ).one()
     cost = Decimal(totals[0])
@@ -464,9 +490,9 @@ async def _spending(
     month = Decimal(
         (
             await session.execute(
-                select(func.coalesce(func.sum(ProcessedPost.cost), 0)).where(
-                    ProcessedPost.created_at >= month_start,
-                    ProcessedPost.created_at < period.end,
+                select(func.coalesce(func.sum(AiRequest.cost), 0)).where(
+                    AiRequest.created_at >= month_start,
+                    AiRequest.created_at < period.end,
                 )
             )
         ).scalar_one()
@@ -475,8 +501,10 @@ async def _spending(
     return Spending(
         cost=cost,
         requests=totals[1],
+        failed=totals[5],
         prompt_tokens=totals[2],
-        completion_tokens=totals[3],
+        cached_tokens=totals[3],
+        completion_tokens=totals[4],
         budget_share=budget_share,
         cost_per_post=cost / publications if publications else None,
         month_to_date=month,
@@ -595,8 +623,8 @@ async def _headline(session: AsyncSession, period: Period) -> Headline:
     ).scalar_one()
     cost = (
         await session.execute(
-            select(func.coalesce(func.sum(ProcessedPost.cost), 0)).where(
-                ProcessedPost.created_at >= period.start, ProcessedPost.created_at < period.end
+            select(func.coalesce(func.sum(AiRequest.cost), 0)).where(
+                AiRequest.created_at >= period.start, AiRequest.created_at < period.end
             )
         )
     ).scalar_one()

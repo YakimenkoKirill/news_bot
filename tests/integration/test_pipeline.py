@@ -24,6 +24,7 @@ from app.config import (
 )
 from app.db.base import session_scope
 from app.db.models import NewsItem, ProcessedPost, Publication, Source
+from app.db.repositories.ai_requests import AiRequestRepository
 from app.db.repositories.misc import KeywordRepository, SettingsRepository
 from app.db.repositories.news import NewsRepository
 from app.db.repositories.posts import ProcessedPostRepository, PublicationRepository
@@ -136,6 +137,7 @@ class Pipeline:
             news_repo=NewsRepository,
             source_repo=SourceRepository,
             post_repo=ProcessedPostRepository,
+            request_repo=AiRequestRepository,
             settings_repo=SettingsRepository,
             processor=processor,
             budget=BudgetGuard(SessionCost(self.scope), self.sink, self.ai_cfg, TZ),

@@ -54,6 +54,7 @@ from app.components import (
 from app.config import Settings, get_settings
 from app.db.base import create_engine, create_session_factory, session_scope
 from app.db.models import Incident
+from app.db.repositories.ai_requests import AiRequestRepository
 from app.db.repositories.incidents import IncidentRepository
 from app.db.repositories.misc import AdminRepository, KeywordRepository, SettingsRepository
 from app.db.repositories.news import NewsRepository
@@ -293,6 +294,7 @@ def build_components(settings: Settings) -> list[Component]:
         news_repo=NewsRepository,
         source_repo=SourceRepository,
         post_repo=ProcessedPostRepository,
+        request_repo=AiRequestRepository,
         settings_repo=SettingsRepository,
         processor=processor,
         budget=budget,
@@ -404,7 +406,7 @@ def build_components(settings: Settings) -> list[Component]:
                     session_scope=scope,
                     news_repo=NewsRepository,
                     source_repo=SourceRepository,
-                    post_repo=ProcessedPostRepository,
+                    cost_repo=AiRequestRepository,
                     publication_repo=PublicationRepository,
                     settings_repo=SettingsRepository,
                     incident_repo=IncidentRepository,
@@ -610,7 +612,7 @@ class _SessionCost:
 
     async def cost_since(self, dt: datetime) -> Decimal:
         async with self._scope() as session:
-            return await ProcessedPostRepository(session).cost_since(dt)
+            return await AiRequestRepository(session).cost_since(dt)
 
 
 class _SessionIncidentStore:

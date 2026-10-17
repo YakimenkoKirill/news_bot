@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.base import session_scope
-from app.db.models import Incident, NewsItem, ProcessedPost, Publication, Source
+from app.db.models import AiRequest, Incident, NewsItem, ProcessedPost, Publication, Source
 from app.domain.alerts import AlertKind
 from app.domain.enums import NewsStatus, PublicationStatus, SourceType
 from app.reports.daily import DailyContext, collect_daily, post_url
@@ -69,6 +69,7 @@ class Fixture:
         post_created_at: datetime | None = None,
         edited_by: int | None = None,
         tokens: tuple[int, int] = (100, 50),
+        cached_tokens: int = 0,
         title: str = "Заголовок",
     ) -> tuple[int, int | None]:
         """Создаёт новость и, если задан score, пересказ. Возвращает (news_id, post_id)."""
@@ -105,7 +106,46 @@ class Fixture:
                 session.add(post)
                 await session.flush()
                 post_id = post.id
+                session.add(
+                    AiRequest(
+                        news_item_id=item.id,
+                        kind="summary",
+                        model="test-model",
+                        prompt_tokens=tokens[0],
+                        cached_tokens=cached_tokens,
+                        completion_tokens=tokens[1],
+                        cost=Decimal(cost),
+                        ok=True,
+                        created_at=post_created_at or created_at,
+                    )
+                )
             return item.id, post_id
+
+    async def ai_request(
+        self,
+        news_id: int | None,
+        *,
+        created_at: datetime,
+        cost: str = "0.001",
+        ok: bool = True,
+        tokens: tuple[int, int] = (100, 50),
+        cached_tokens: int = 0,
+    ) -> None:
+        """Добавляет запрос к модели без пересказа (например, неудачную попытку)."""
+        async with self.scope() as session:
+            session.add(
+                AiRequest(
+                    news_item_id=news_id,
+                    kind="summary",
+                    model="test-model",
+                    prompt_tokens=tokens[0],
+                    cached_tokens=cached_tokens,
+                    completion_tokens=tokens[1],
+                    cost=Decimal(cost),
+                    ok=ok,
+                    created_at=created_at,
+                )
+            )
 
     async def publish(
         self,
@@ -305,6 +345,62 @@ async def test_spending_and_quality(
     assert quality.delay_median_min == pytest.approx(120.0)
     assert quality.avg_published_score == pytest.approx(0.7)
     assert quality.duplicate_share == 0.0
+
+
+async def test_failed_requests_counted_in_spending(
+    session_factory: async_sessionmaker[AsyncSession], session: AsyncSession
+) -> None:
+    """Две неудачные попытки без пересказа всё равно видны в расходе."""
+    fixture = Fixture(session_factory)
+    source_id = await fixture.source("A")
+    news_id, post_id = await fixture.news(
+        source_id, created_at=msk(9), published_at=msk(8), score=0.9, cost="0.002"
+    )
+    assert post_id
+    await fixture.publish(post_id, msk(10), message_id=1)
+    failed_id, _ = await fixture.news(
+        source_id, status=S.FAILED, created_at=msk(11), reason="bad_ai_response"
+    )
+    await fixture.ai_request(failed_id, created_at=msk(11), cost="0.004", ok=False)
+    await fixture.ai_request(failed_id, created_at=msk(11), cost="0.003", ok=False)
+
+    spending = (await fixture.report(session)).spending
+    assert spending.cost == Decimal("0.009")
+    assert (spending.requests, spending.failed) == (3, 2)
+    assert spending.month_to_date == Decimal("0.009")
+    assert news_id != failed_id
+
+
+async def test_cached_tokens_share_in_spending(
+    session_factory: async_sessionmaker[AsyncSession], session: AsyncSession
+) -> None:
+    fixture = Fixture(session_factory)
+    source_id = await fixture.source("A")
+    await fixture.news(
+        source_id,
+        created_at=msk(9),
+        published_at=msk(8),
+        score=0.9,
+        tokens=(1000, 100),
+        cached_tokens=750,
+    )
+
+    spending = (await fixture.report(session)).spending
+    assert (spending.prompt_tokens, spending.cached_tokens) == (1000, 750)
+    assert spending.cached_share == pytest.approx(0.75)
+    assert spending.failed == 0
+
+
+async def test_requests_of_deleted_news_remain(
+    session_factory: async_sessionmaker[AsyncSession], session: AsyncSession
+) -> None:
+    """Новость удалена — строка расхода остаётся с news_item_id = NULL."""
+    fixture = Fixture(session_factory)
+    await fixture.ai_request(None, created_at=msk(9), cost="0.007", ok=False)
+
+    spending = (await fixture.report(session)).spending
+    assert spending.cost == Decimal("0.007")
+    assert (spending.requests, spending.failed) == (1, 1)
 
 
 async def test_queue_state_and_errors(

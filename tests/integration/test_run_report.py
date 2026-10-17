@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import MetricsConfig
-from app.db.models import NewsItem, ProcessedPost, Publication, Source
+from app.db.models import AiRequest, NewsItem, ProcessedPost, Publication, Source
 from app.domain.enums import NewsStatus, PublicationStatus, SourceType
 from scripts.run_report import (
     MetricCheck,
@@ -84,6 +84,19 @@ async def _post(
         created_at=created_at,
     )
     session.add(post)
+    session.add(
+        AiRequest(
+            news_item_id=news.id,
+            kind="summary",
+            model="test-model",
+            prompt_tokens=1,
+            cached_tokens=0,
+            completion_tokens=1,
+            cost=Decimal(cost),
+            ok=True,
+            created_at=created_at,
+        )
+    )
     await session.flush()
     return post
 

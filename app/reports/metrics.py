@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import MetricsConfig
-from app.db.models import NewsItem, ProcessedPost, Publication, Source
+from app.db.models import AiRequest, NewsItem, ProcessedPost, Publication, Source
 from app.domain.enums import NewsStatus, PublicationStatus
 
 P95 = 0.95
@@ -169,7 +169,9 @@ async def collect_report(session: AsyncSession, period: Period, tz: ZoneInfo) ->
 
     for created_at, cost in (
         await session.execute(
-            select(ProcessedPost.created_at, ProcessedPost.cost).where(in_period_post)
+            select(AiRequest.created_at, AiRequest.cost).where(
+                AiRequest.created_at >= period.start, AiRequest.created_at < period.end
+            )
         )
     ).all():
         day = created_at.astimezone(tz).date()

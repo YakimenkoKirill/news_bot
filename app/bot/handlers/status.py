@@ -54,9 +54,9 @@ class StatusSourceRepo(Protocol):
         raise NotImplementedError
 
 
-class StatusPostRepo(Protocol):
+class StatusCostRepo(Protocol):
     async def cost_since(self, dt: datetime) -> Decimal:
-        """Расход на модель с момента dt."""
+        """Расход на модель с момента dt (AiRequestRepository подходит структурно)."""
         raise NotImplementedError
 
 
@@ -91,7 +91,7 @@ class StatusDeps:
     session_scope: Callable[[], AbstractAsyncContextManager[Any]]
     news_repo: Callable[[Any], StatusNewsRepo]
     source_repo: Callable[[Any], StatusSourceRepo]
-    post_repo: Callable[[Any], StatusPostRepo]
+    cost_repo: Callable[[Any], StatusCostRepo]
     publication_repo: Callable[[Any], StatusPublicationRepo]
     settings_repo: Callable[[Any], StatusSettingsRepo]
     incident_repo: Callable[[Any], StatusIncidentRepo]
@@ -113,7 +113,7 @@ async def build_status(deps: StatusDeps) -> str:
     async with deps.session_scope() as session:
         counts = await deps.news_repo(session).count_by_status()
         sources = await deps.source_repo(session).list_enabled()
-        spent = await deps.post_repo(session).cost_since(day_start)
+        spent = await deps.cost_repo(session).cost_since(day_start)
         last = await deps.publication_repo(session).last_published_at(deps.channel_id)
         paused = bool(await deps.settings_repo(session).get(PAUSED_SETTING, False))
         open_errors = await deps.incident_repo(session).count(open_only=True)

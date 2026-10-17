@@ -1,13 +1,14 @@
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 import pytest
 import structlog
 
 from app.config import AiConfig, ChannelProfile
-from app.db.models import ProcessedPost
+from app.db.models import AiRequest, ProcessedPost
 from app.domain.enums import ModerationMode, NewsStatus
 from app.domain.status import ensure_transition
 from app.pipeline.ai.budget import cost
@@ -73,6 +74,15 @@ class FakePostRepo:
         return post
 
 
+@dataclass
+class FakeRequestRepo:
+    requests: list[AiRequest] = field(default_factory=list)
+
+    async def add(self, request: AiRequest) -> AiRequest:
+        self.requests.append(request)
+        return request
+
+
 class FakeClient:
     def __init__(self, outcomes: list[AiRawResponse | Exception]) -> None:
         self.outcomes: list[AiRawResponse | Exception] = list(outcomes)
@@ -103,9 +113,20 @@ async def _run(
     outcomes: list[Any], mode: ModerationMode = ModerationMode.AUTO
 ) -> tuple[NewsStatus, FakeNewsRepo, FakePostRepo, FakeClient]:
     news_repo, post_repo, client = FakeNewsRepo(), FakePostRepo(), FakeClient(outcomes)
-    processor = AiProcessor(client, PROFILE, AiRepos(news=news_repo, posts=post_repo), CFG)
+    processor = AiProcessor(client, PROFILE, _repos(news_repo, post_repo), CFG)
     status = await processor.process(News(), Source(mode))
     return status, news_repo, post_repo, client
+
+
+def _repos(
+    news_repo: FakeNewsRepo,
+    post_repo: FakePostRepo,
+    requests: FakeRequestRepo | None = None,
+    admit: Any = None,
+) -> AiRepos:
+    return AiRepos(
+        news=news_repo, posts=post_repo, requests=requests or FakeRequestRepo(), admit=admit
+    )
 
 
 async def test_auto_mode_approved() -> None:
@@ -118,7 +139,7 @@ async def test_auto_mode_approved() -> None:
     assert post.hashtags == ["#железо"]
     assert post.prompt_version == PROMPT_VERSION
     assert (post.prompt_tokens, post.completion_tokens) == (1000, 200)
-    assert post.cost == cost(1000, 200, CFG), "стоимость считается по ценам из конфигурации"
+    assert post.cost == cost(1000, 0, 200, CFG), "стоимость считается по ценам из конфигурации"
     assert post.review_note is None
 
 
@@ -201,14 +222,93 @@ async def test_second_bad_response_fails() -> None:
     assert len(client.calls) == 2
 
 
+async def _run_with_requests(
+    outcomes: list[Any],
+) -> tuple[NewsStatus, FakeRequestRepo, FakePostRepo]:
+    news_repo, post_repo, requests = FakeNewsRepo(), FakePostRepo(), FakeRequestRepo()
+    processor = AiProcessor(
+        FakeClient(outcomes), PROFILE, _repos(news_repo, post_repo, requests), CFG
+    )
+    status = await processor.process(News(), Source())
+    return status, requests, post_repo
+
+
+async def test_request_recorded_for_successful_attempt() -> None:
+    status, requests, posts = await _run_with_requests([_answer()])
+    assert status is NewsStatus.APPROVED
+    [request] = requests.requests
+    assert request.news_item_id == 1
+    assert request.kind == "summary"
+    assert request.model == CFG.model
+    assert (request.prompt_tokens, request.cached_tokens, request.completion_tokens) == (
+        1000,
+        0,
+        200,
+    )
+    assert request.ok is True
+    assert request.cost == cost(1000, 0, 200, CFG)
+    assert posts.posts[0].cost == request.cost
+
+
+async def test_cached_tokens_reduce_request_cost() -> None:
+    cfg = CFG.model_copy(update={"price_input_cached_per_1m": 0.0})
+    news_repo, post_repo, requests = FakeNewsRepo(), FakePostRepo(), FakeRequestRepo()
+    answer = AiRawResponse(_answer().content, 1000, 200, cached_tokens=800)
+    processor = AiProcessor(
+        FakeClient([answer]), PROFILE, _repos(news_repo, post_repo, requests), cfg
+    )
+    assert await processor.process(News(), Source()) is NewsStatus.APPROVED
+    [request] = requests.requests
+    assert request.cached_tokens == 800
+    assert request.cost == cost(1000, 800, 200, cfg)
+    assert post_repo.posts[0].cost == request.cost
+
+
+async def test_request_recorded_for_each_attempt() -> None:
+    """Плохой первый ответ тоже оплачен: его токены видны в ai_requests."""
+    status, requests, posts = await _run_with_requests([AiRawResponse("{}", 300, 20), _answer()])
+    assert status is NewsStatus.APPROVED
+    first, second = requests.requests
+    assert (first.ok, first.prompt_tokens, first.completion_tokens) == (False, 300, 20)
+    assert first.cost == cost(300, 0, 20, CFG)
+    assert (second.ok, second.prompt_tokens) == (True, 1000)
+    assert posts.posts[0].cost == first.cost + second.cost, "cost поста = сумма его запросов"
+
+
+async def test_two_failed_attempts_are_both_recorded() -> None:
+    status, requests, posts = await _run_with_requests(
+        [AiRawResponse("{}", 300, 20), AiRawResponse("не json", 310, 25)]
+    )
+    assert status is NewsStatus.FAILED
+    assert posts.posts == []
+    assert [r.ok for r in requests.requests] == [False, False]
+    assert sum(r.cost for r in requests.requests) == cost(300, 0, 20, CFG) + cost(310, 0, 25, CFG)
+    assert all(r.news_item_id == 1 for r in requests.requests)
+
+
+async def test_attempt_without_response_recorded_with_zeros() -> None:
+    """Пустой или обрезанный ответ: токенов нет, но попытка видна."""
+    status, requests, _ = await _run_with_requests(
+        [AiResponseError("ответ модели обрезан по max_tokens"), _answer()]
+    )
+    assert status is NewsStatus.APPROVED
+    first, second = requests.requests
+    assert (first.ok, first.prompt_tokens, first.cached_tokens, first.completion_tokens) == (
+        False,
+        0,
+        0,
+        0,
+    )
+    assert first.cost == Decimal(0)
+    assert second.ok is True
+
+
 @pytest.mark.parametrize(
     "error", [AiUnavailableError("down"), AiFatalError("401")], ids=["unavailable", "fatal"]
 )
 async def test_api_errors_propagate_and_status_unchanged(error: Exception) -> None:
     news_repo, post_repo = FakeNewsRepo(), FakePostRepo()
-    processor = AiProcessor(
-        FakeClient([error]), PROFILE, AiRepos(news=news_repo, posts=post_repo), CFG
-    )
+    processor = AiProcessor(FakeClient([error]), PROFILE, _repos(news_repo, post_repo), CFG)
     with pytest.raises(type(error)):
         await processor.process(News(), Source())
     assert news_repo.status is NewsStatus.NORMALIZED
@@ -218,12 +318,17 @@ async def test_api_errors_propagate_and_status_unchanged(error: Exception) -> No
 def test_real_components_fit_protocols() -> None:
     from unittest.mock import MagicMock
 
+    from app.db.repositories.ai_requests import AiRequestRepository
     from app.db.repositories.news import NewsRepository
     from app.db.repositories.posts import ProcessedPostRepository
     from app.pipeline.ai.client import DeepSeekClient
 
     client = DeepSeekClient.__new__(DeepSeekClient)
-    repos = AiRepos(news=NewsRepository(MagicMock()), posts=ProcessedPostRepository(MagicMock()))
+    repos = AiRepos(
+        news=NewsRepository(MagicMock()),
+        posts=ProcessedPostRepository(MagicMock()),
+        requests=AiRequestRepository(MagicMock()),
+    )
     assert isinstance(AiProcessor(client, PROFILE, repos, CFG), AiProcessor)
 
 
@@ -247,10 +352,7 @@ async def _run_with_admit(
 ) -> tuple[NewsStatus, FakeNewsRepo]:
     news_repo, post_repo = FakeNewsRepo(), FakePostRepo()
     processor = AiProcessor(
-        FakeClient([_answer()]),
-        PROFILE,
-        AiRepos(news=news_repo, posts=post_repo, admit=admit),
-        CFG,
+        FakeClient([_answer()]), PROFILE, _repos(news_repo, post_repo, admit=admit), CFG
     )
     status = await processor.process(News(), Source(mode))
     return status, news_repo

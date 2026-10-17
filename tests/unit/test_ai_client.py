@@ -35,12 +35,15 @@ def _response(
     content: str | None = '{"title": "t"}',
     usage: tuple[int, int] | None = (120, 40),
     finish_reason: str | None = "stop",
+    cache_fields: dict[str, Any] | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         choices=[
             SimpleNamespace(message=SimpleNamespace(content=content), finish_reason=finish_reason)
         ],
-        usage=SimpleNamespace(prompt_tokens=usage[0], completion_tokens=usage[1])
+        usage=SimpleNamespace(
+            prompt_tokens=usage[0], completion_tokens=usage[1], **(cache_fields or {})
+        )
         if usage
         else None,
     )
@@ -149,6 +152,53 @@ async def test_other_finish_reasons_are_normal(
 ) -> None:
     fake = FakeOpenAI([_response(finish_reason=finish_reason)])
     assert (await _client(settings, fake).chat_json(MESSAGES)).content == '{"title": "t"}'
+
+
+async def test_cached_tokens_from_deepseek_field(settings: Settings) -> None:
+    fake = FakeOpenAI([_response(cache_fields={"prompt_cache_hit_tokens": 100})])
+    assert (await _client(settings, fake).chat_json(MESSAGES)).cached_tokens == 100
+
+
+async def test_cached_tokens_from_openai_details(settings: Settings) -> None:
+    details = SimpleNamespace(cached_tokens=64)
+    fake = FakeOpenAI([_response(cache_fields={"prompt_tokens_details": details})])
+    assert (await _client(settings, fake).chat_json(MESSAGES)).cached_tokens == 64
+
+
+async def test_deepseek_field_wins_over_details(settings: Settings) -> None:
+    fields: dict[str, Any] = {
+        "prompt_cache_hit_tokens": 10,
+        "prompt_tokens_details": SimpleNamespace(cached_tokens=99),
+    }
+    fake = FakeOpenAI([_response(cache_fields=fields)])
+    assert (await _client(settings, fake).chat_json(MESSAGES)).cached_tokens == 10
+
+
+@pytest.mark.parametrize(
+    "cache_fields",
+    [
+        None,
+        {"prompt_cache_hit_tokens": None},
+        {"prompt_tokens_details": None},
+        {"prompt_tokens_details": SimpleNamespace(cached_tokens=None)},
+    ],
+    ids=["absent", "null-field", "null-details", "null-cached"],
+)
+async def test_cached_tokens_default_to_zero(
+    settings: Settings, cache_fields: dict[str, Any] | None
+) -> None:
+    fake = FakeOpenAI([_response(cache_fields=cache_fields)])
+    assert (await _client(settings, fake).chat_json(MESSAGES)).cached_tokens == 0
+
+
+async def test_cached_tokens_not_greater_than_prompt(settings: Settings) -> None:
+    fake = FakeOpenAI([_response(usage=(50, 10), cache_fields={"prompt_cache_hit_tokens": 500})])
+    assert (await _client(settings, fake).chat_json(MESSAGES)).cached_tokens == 50
+
+
+async def test_missing_usage_gives_zero_cached_tokens(settings: Settings) -> None:
+    fake = FakeOpenAI([_response(usage=None)])
+    assert (await _client(settings, fake).chat_json(MESSAGES)).cached_tokens == 0
 
 
 async def test_retry_on_429(settings: Settings) -> None:

@@ -37,6 +37,18 @@ EXPECTED_COLUMNS = {
     "admins": {"telegram_id", "role", "created_at"},
     "settings": {"key", "value", "updated_at"},
     "bot_screens": {"chat_id", "screen_token", "message_ids", "updated_at"},
+    "ai_requests": {
+        "id",
+        "news_item_id",
+        "kind",
+        "model",
+        "prompt_tokens",
+        "cached_tokens",
+        "completion_tokens",
+        "cost",
+        "ok",
+        "created_at",
+    },
     "incidents": {
         "id",
         "kind",

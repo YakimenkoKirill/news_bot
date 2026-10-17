@@ -28,25 +28,54 @@ class Prices(Protocol):
         raise NotImplementedError
 
     @property
+    def price_input_cached_per_1m(self) -> float | None:
+        """Цена входных токенов, попавших в кэш; None — как обычные входные."""
+        raise NotImplementedError
+
+    @property
     def price_output_per_1m(self) -> Decimal:
         """Цена выходных токенов."""
         raise NotImplementedError
 
 
-def cost(prompt_tokens: int, completion_tokens: int, prices: Prices) -> Decimal:
-    """Стоимость запроса в Decimal, округлённая до точности колонки processed_posts.cost."""
+def _cached_price(prices: Prices) -> Decimal:
+    value = prices.price_input_cached_per_1m
+    if value is None:
+        return prices.price_input_per_1m
+    return Decimal(str(value))
+
+
+def cost(prompt_tokens: int, cached_tokens: int, completion_tokens: int, prices: Prices) -> Decimal:
+    """Стоимость запроса к модели, округлённая до точности колонки cost.
+
+    Входные токены, попавшие в кэш провайдера, считаются по
+    ai.price_input_cached_per_1m; если цена кэша не задана, они стоят столько же,
+    сколько обычные входные.
+
+    Args:
+        prompt_tokens: Все входные токены, включая кэшированные.
+        cached_tokens: Входные токены из кэша (не больше prompt_tokens).
+        completion_tokens: Выходные токены.
+        prices: Цены за 1 млн токенов.
+
+    Returns:
+        Стоимость запроса в долларах.
+    """
+    cached = min(max(cached_tokens, 0), max(prompt_tokens, 0))
+    fresh = max(prompt_tokens, 0) - cached
     total = (
-        Decimal(prompt_tokens) * prices.price_input_per_1m
+        Decimal(fresh) * prices.price_input_per_1m
+        + Decimal(cached) * _cached_price(prices)
         + Decimal(completion_tokens) * prices.price_output_per_1m
     ) / TOKENS_PER_PRICE_UNIT
     return total.quantize(COST_QUANT, rounding=ROUND_HALF_UP)
 
 
 class CostRepo(Protocol):
-    """Нужная бюджету часть ProcessedPostRepository."""
+    """Нужная бюджету часть AiRequestRepository."""
 
     async def cost_since(self, dt: datetime) -> Decimal:
-        """Суммарная стоимость начиная с dt."""
+        """Суммарная стоимость запросов к модели начиная с dt."""
         raise NotImplementedError
 
 

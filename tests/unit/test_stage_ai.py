@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from app.db.models import ProcessedPost
+from app.db.models import AiRequest, ProcessedPost
 from app.domain.alerts import AlertEvent, AlertKind
 from app.domain.enums import ModerationMode, NewsStatus
 from app.pipeline.ai.budget import BudgetExceeded
@@ -41,6 +41,7 @@ class Src:
 class Db:
     news: dict[int, News] = field(default_factory=dict)
     posts: dict[int, ProcessedPost] = field(default_factory=dict)
+    requests: list[AiRequest] = field(default_factory=list)
     settings: dict[str, Any] = field(default_factory=dict)
     sources: dict[int, Src] = field(default_factory=lambda: {1: Src()})
 
@@ -79,6 +80,15 @@ class PostRepo:
 
     async def get_by_news(self, news_id: int) -> ProcessedPost | None:
         return self.db.posts.get(news_id)
+
+
+class RequestRepo:
+    def __init__(self, db: Db) -> None:
+        self.db = db
+
+    async def add(self, request: AiRequest) -> AiRequest:
+        self.db.requests.append(request)
+        return request
 
 
 class SettingsRepo:
@@ -210,6 +220,7 @@ def _env(
         news_repo=NewsRepo,
         source_repo=SourceRepo,
         post_repo=PostRepo,
+        request_repo=RequestRepo,
         settings_repo=SettingsRepo,
         processor=lambda repos: FakeProcessor(repos, plan or {}, tracker),
         budget=budget,
@@ -357,6 +368,7 @@ def test_real_components_fit_protocols() -> None:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from app.config import AiConfig, ChannelProfile
+    from app.db.repositories.ai_requests import AiRequestRepository
     from app.db.repositories.misc import SettingsRepository
     from app.db.repositories.news import NewsRepository
     from app.db.repositories.posts import ProcessedPostRepository
@@ -378,13 +390,14 @@ def test_real_components_fit_protocols() -> None:
         raise AssertionError("не вызывается")
         yield
 
-    cost_repo = ProcessedPostRepository.__new__(ProcessedPostRepository)
+    cost_repo = AiRequestRepository.__new__(AiRequestRepository)
     budget = BudgetGuard(cost_repo, Sink(), cfg, "UTC")
     deps = AiStageDeps(
         session_scope=scope,
         news_repo=NewsRepository,
         source_repo=SourceRepository,
         post_repo=ProcessedPostRepository,
+        request_repo=AiRequestRepository,
         settings_repo=SettingsRepository,
         processor=processor,
         budget=budget,

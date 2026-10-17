@@ -35,6 +35,27 @@ JSON_RESPONSE_FORMAT = {"type": "json_object"}
 TRUNCATED_FINISH_REASON = "length"
 
 
+def _cached_tokens(usage: Any) -> int:
+    """Входные токены, попавшие в кэш провайдера.
+
+    DeepSeek присылает prompt_cache_hit_tokens, OpenAI-совместимые провайдеры —
+    prompt_tokens_details.cached_tokens; если нет ни того, ни другого — 0.
+
+    Args:
+        usage: Поле usage ответа модели или None.
+
+    Returns:
+        Число кэшированных входных токенов.
+    """
+    if usage is None:
+        return 0
+    hit = getattr(usage, "prompt_cache_hit_tokens", None)
+    if hit is None:
+        details = getattr(usage, "prompt_tokens_details", None)
+        hit = getattr(details, "cached_tokens", None) if details is not None else None
+    return int(hit or 0)
+
+
 class AiError(Exception):
     """Базовая ошибка обращения к модели."""
 
@@ -53,11 +74,19 @@ class AiResponseError(AiError):
 
 @dataclass(frozen=True)
 class AiRawResponse:
-    """Текст ответа модели и расход токенов."""
+    """Текст ответа модели и расход токенов.
+
+    Attributes:
+        content: Текст ответа.
+        prompt_tokens: Все входные токены, включая попавшие в кэш.
+        completion_tokens: Выходные токены.
+        cached_tokens: Входные токены, оплаченные по цене кэша.
+    """
 
     content: str
     prompt_tokens: int
     completion_tokens: int
+    cached_tokens: int = 0
 
 
 class DeepSeekClient:
@@ -157,6 +186,7 @@ class DeepSeekClient:
         completion_tokens = (
             int(getattr(usage, "completion_tokens", 0) or 0) if usage is not None else 0
         )
+        cached_tokens = min(_cached_tokens(usage), prompt_tokens)
         if choices and getattr(choices[0], "finish_reason", None) == TRUNCATED_FINISH_REASON:
             log.warning(
                 "ai.truncated",
@@ -172,6 +202,7 @@ class DeepSeekClient:
             content=str(content),
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
+            cached_tokens=cached_tokens,
         )
 
     def _wait(self, state: RetryCallState) -> float:
