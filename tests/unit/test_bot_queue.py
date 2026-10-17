@@ -21,6 +21,7 @@ from app.config import AiConfig, ChannelProfile, PublisherConfig, Settings
 from app.db.models import NewsItem, ProcessedPost, Source
 from app.db.repositories.news import Priority
 from app.domain.enums import NewsStatus, SourceType
+from app.pipeline.review import ReviewDeps
 from app.publisher.media import ImageCheck
 from app.publisher.stage_publish import ManualPublishDeps
 from app.runtime_config import RuntimeSnapshot
@@ -41,6 +42,7 @@ SECONDS_PER_HOUR = 3600
 INTERVAL = timedelta(minutes=CFG.min_interval_min)
 CALLBACK_DATA_LIMIT = 64
 MAX_PER_SOURCE = 0  # по умолчанию заполненность не показываем
+BATCH_SIZE = 20
 
 
 @dataclass
@@ -136,6 +138,21 @@ class NewsRepo:
     async def get(self, news_id: int) -> NewsItem | None:
         return self.db.news.get(news_id)
 
+    async def set_status(
+        self, news_id: int, expected: NewsStatus, new: NewsStatus, reason: str | None = None
+    ) -> None:
+        item = self.db.news[news_id]
+        assert item.status == expected
+        item.status = new
+        item.reject_reason = reason
+
+    async def claim_batch(
+        self, status: NewsStatus | Sequence[NewsStatus], limit: int
+    ) -> list[NewsItem]:
+        statuses = [status] if isinstance(status, NewsStatus) else list(status)
+        items = [n for n in self.db.news.values() if n.status in statuses]
+        return sorted(items, key=lambda n: n.id)[:limit]
+
 
 class PostRepo:
     def __init__(self, db: Db) -> None:
@@ -143,6 +160,20 @@ class PostRepo:
 
     async def get_by_news(self, news_id: int) -> ProcessedPost | None:
         return self.db.posts.get(news_id)
+
+
+class ReviewPostRepo(PostRepo):
+    """Пересказы для отмены: нужен поиск по новости и снятие отсрочки."""
+
+    async def get_by_news(self, news_id: int) -> ProcessedPost | None:
+        return self.db.posts.get(news_id)
+
+    async def set_snooze(self, post_id: int, until: Any) -> bool:
+        for post in self.db.posts.values():
+            if post.id == post_id:
+                post.snoozed_until = until
+                return True
+        return False
 
 
 class PublicationRepo:
@@ -198,6 +229,8 @@ def _deps(db: Db, now: datetime = NOW) -> QueueDeps:
         page_size=PAGE_SIZE,
         title_chars=bot_config().queue_title_chars,
         max_per_source=MAX_PER_SOURCE,
+        review=ReviewDeps(session_scope=scope, news_repo=NewsRepo, post_repo=ReviewPostRepo),
+        batch_size=BATCH_SIZE,
         clock=lambda: now,
         manual=ManualPublishDeps(publish=MagicMock(), news_repo=MagicMock()),
     )
@@ -531,6 +564,12 @@ def test_real_components_fit_protocols() -> None:
         page_size=PAGE_SIZE,
         title_chars=bot_config().queue_title_chars,
         max_per_source=MAX_PER_SOURCE,
+        review=ReviewDeps(
+            session_scope=base.session_scope,
+            news_repo=NewsRepository,
+            post_repo=ProcessedPostRepository,
+        ),
+        batch_size=BATCH_SIZE,
         clock=base.clock,
         manual=ManualPublishDeps(publish=MagicMock(), news_repo=NewsRepository),
     )

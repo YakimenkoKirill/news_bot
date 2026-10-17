@@ -10,7 +10,16 @@ from aiogram.filters.callback_data import CallbackData
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from app.bot.texts import SETTINGS_LABELS, SETTINGS_LIST_BUTTON, SETTINGS_RESET_BUTTON
+from app.bot.texts import (
+    QUEUE_CANCEL_ALL_BUTTON,
+    QUEUE_CANCEL_ALL_YES,
+    QUEUE_CANCEL_BUTTON,
+    QUEUE_CANCEL_NO,
+    QUEUE_CANCEL_YES,
+    SETTINGS_LABELS,
+    SETTINGS_LIST_BUTTON,
+    SETTINGS_RESET_BUTTON,
+)
 from app.domain.enums import NewsStatus
 
 BUTTONS_PER_SOURCE = 3
@@ -188,6 +197,10 @@ class QueueActionType(StrEnum):
     PUBLISH = "publish"
     CONFIRM = "confirm"
     CANCEL = "cancel"
+    CANCEL_REVIEW = "rej"
+    CONFIRM_CANCEL_REVIEW = "rej_ok"
+    CANCEL_ALL = "rej_all"
+    CONFIRM_CANCEL_ALL = "rej_all_ok"
 
 
 class QueueAction(CallbackData, prefix="q"):
@@ -232,6 +245,12 @@ def queue_keyboard(
             callback_data=QueueAction(action=QueueActionType.PAGE, tab=item, page=0),
         )
     row_sizes.append(len(QueueTab))
+    if tab is QueueTab.REVIEW and positions:
+        builder.button(
+            text=QUEUE_CANCEL_ALL_BUTTON,
+            callback_data=QueueAction(action=QueueActionType.CANCEL_ALL, tab=tab, page=page),
+        )
+        row_sizes.append(1)
     nav = 0
     if has_prev:
         builder.button(
@@ -252,7 +271,11 @@ def queue_keyboard(
 
 
 def queue_item_keyboard(news_id: int, tab: QueueTab, page: int) -> InlineKeyboardMarkup:
-    """Кнопки под предпросмотром поста из /queue: «Опубликовать сейчас» и «К списку»."""
+    """Кнопки под предпросмотром поста из /queue.
+
+    «Опубликовать сейчас» есть всегда, «Отменить» — только на вкладке модерации:
+    пост в очереди уже одобрен, его отменяют не здесь.
+    """
     builder = InlineKeyboardBuilder()
     builder.button(
         text="🚀 Опубликовать сейчас",
@@ -260,11 +283,52 @@ def queue_item_keyboard(news_id: int, tab: QueueTab, page: int) -> InlineKeyboar
             action=QueueActionType.PUBLISH, tab=tab, page=page, news_id=news_id
         ),
     )
+    if tab is QueueTab.REVIEW:
+        builder.button(
+            text=QUEUE_CANCEL_BUTTON,
+            callback_data=QueueAction(
+                action=QueueActionType.CANCEL_REVIEW, tab=tab, page=page, news_id=news_id
+            ),
+        )
     builder.button(
         text="◀️ К списку",
         callback_data=QueueAction(action=QueueActionType.BACK, tab=tab, page=page, news_id=news_id),
     )
     builder.adjust(1)
+    return builder.as_markup()
+
+
+def cancel_confirm_keyboard(news_id: int, tab: QueueTab, page: int) -> InlineKeyboardMarkup:
+    """Подтверждение отмены одного поста на модерации."""
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=QUEUE_CANCEL_YES,
+        callback_data=QueueAction(
+            action=QueueActionType.CONFIRM_CANCEL_REVIEW, tab=tab, page=page, news_id=news_id
+        ),
+    )
+    builder.button(
+        text=QUEUE_CANCEL_NO,
+        callback_data=QueueAction(
+            action=QueueActionType.CANCEL, tab=tab, page=page, news_id=news_id
+        ),
+    )
+    builder.adjust(2)
+    return builder.as_markup()
+
+
+def cancel_all_confirm_keyboard(tab: QueueTab, page: int) -> InlineKeyboardMarkup:
+    """Подтверждение отмены всех постов на модерации."""
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=QUEUE_CANCEL_ALL_YES,
+        callback_data=QueueAction(action=QueueActionType.CONFIRM_CANCEL_ALL, tab=tab, page=page),
+    )
+    builder.button(
+        text=QUEUE_CANCEL_NO,
+        callback_data=QueueAction(action=QueueActionType.PAGE, tab=tab, page=page),
+    )
+    builder.adjust(2)
     return builder.as_markup()
 
 

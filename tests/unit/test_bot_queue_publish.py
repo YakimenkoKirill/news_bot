@@ -188,4 +188,10 @@ def test_new_buttons_callback_data_fits_limit() -> None:
             for button in row:
                 assert len((button.callback_data or "").encode()) <= CALLBACK_DATA_LIMIT
     labels = [b.text for m in markups for row in m.inline_keyboard for b in row]
-    assert labels == ["🚀 Опубликовать сейчас", "◀️ К списку", "✅ Да, опубликовать", "Отмена"]
+    assert labels == [
+        "🚀 Опубликовать сейчас",
+        texts.QUEUE_CANCEL_BUTTON,
+        "◀️ К списку",
+        "✅ Да, опубликовать",
+        "Отмена",
+    ]

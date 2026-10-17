@@ -22,6 +22,8 @@ from app.bot.keyboards import (
     QueueAction,
     QueueActionType,
     QueueTab,
+    cancel_all_confirm_keyboard,
+    cancel_confirm_keyboard,
     queue_confirm_keyboard,
     queue_item_keyboard,
     queue_keyboard,
@@ -33,6 +35,7 @@ from app.db.models import NewsItem, ProcessedPost
 from app.db.repositories.news import Priority
 from app.domain.enums import NewsStatus
 from app.pipeline.ai.prompts import truncate_words
+from app.pipeline.review import CancelOutcome, ReviewDeps, cancel_all_reviews, cancel_review
 from app.publisher.slots import queue_eta
 from app.publisher.stage_publish import (
     PAUSED_SETTING,
@@ -134,6 +137,8 @@ class QueueDeps:
         max_per_source: Лимит постов источника в очереди; 0 — без лимита.
         clock: Текущее время.
         manual: Зависимости публикации вне очереди (publish_now).
+        review: Зависимости отмены постов на модерации.
+        batch_size: Размер пачки при отмене всех постов (pipeline.batch_size).
         runtime: Изменяемые на лету параметры; None — значения из yaml.
     """
 
@@ -152,6 +157,8 @@ class QueueDeps:
     max_per_source: int
     clock: Callable[[], datetime]
     manual: ManualPublishDeps
+    review: ReviewDeps
+    batch_size: int
     runtime: RuntimeSource | None = None
 
 
@@ -284,6 +291,14 @@ async def on_queue_action(
         await callback.answer()
     elif callback_data.action is QueueActionType.CONFIRM:
         await _confirm(callback, callback_data, deps)
+    elif callback_data.action is QueueActionType.CANCEL_REVIEW:
+        await _ask_cancel(callback, callback_data)
+    elif callback_data.action is QueueActionType.CONFIRM_CANCEL_REVIEW:
+        await _confirm_cancel(callback, callback_data, deps)
+    elif callback_data.action is QueueActionType.CANCEL_ALL:
+        await _ask_cancel_all(callback, callback_data, deps)
+    elif callback_data.action is QueueActionType.CONFIRM_CANCEL_ALL:
+        await _confirm_cancel_all(callback, callback_data, deps)
 
 
 async def _open(callback: Any, data: QueueAction, deps: QueueDeps, bot: Any) -> None:
@@ -341,6 +356,63 @@ async def _confirm(callback: Any, data: QueueAction, deps: QueueDeps) -> None:
         await callback.message.answer(texts.QUEUE_PUBLISH_BUSY)
         return
     await mark_message(callback, _decision(result), who)
+
+
+async def _ask_cancel(callback: Any, data: QueueAction) -> None:
+    """Спрашивает подтверждение отмены одного поста."""
+    keyboard = cancel_confirm_keyboard(data.news_id, data.tab, data.page)
+    await callback.message.edit_reply_markup(reply_markup=keyboard)
+    await callback.answer(texts.QUEUE_CANCEL_CONFIRM, show_alert=True)
+
+
+async def _confirm_cancel(callback: Any, data: QueueAction, deps: QueueDeps) -> None:
+    """Отменяет пост на модерации после подтверждения."""
+    user_id, who = _who(callback)
+    result = await cancel_review(data.news_id, user_id or 0, deps.review)
+    log.info(
+        "queue.cancel_review",
+        news_id=data.news_id,
+        user_id=user_id,
+        outcome=result.outcome.value,
+    )
+    await callback.answer()
+    await mark_message(callback, _cancel_decision(result), who)
+
+
+def _cancel_decision(result: Any) -> str:
+    """Текст итога отмены для пометки под постом."""
+    if result.outcome is CancelOutcome.CANCELLED:
+        return texts.QUEUE_CANCELLED
+    if result.outcome is CancelOutcome.ALREADY_DONE:
+        status = result.status.value if result.status is not None else ""
+        return texts.QUEUE_CANCEL_DONE.format(status=status)
+    return texts.QUEUE_CANCEL_NOT_FOUND
+
+
+async def _ask_cancel_all(callback: Any, data: QueueAction, deps: QueueDeps) -> None:
+    """Спрашивает подтверждение отмены всех постов на модерации."""
+    async with deps.session_scope() as session:
+        count = await deps.news_repo(session).count_prepared(QUEUE_TAB_STATUSES[QueueTab.REVIEW])
+    await callback.answer()
+    await callback.message.edit_text(
+        texts.QUEUE_CANCEL_ALL_CONFIRM.format(count=count),
+        reply_markup=cancel_all_confirm_keyboard(data.tab, data.page),
+    )
+
+
+async def _confirm_cancel_all(callback: Any, data: QueueAction, deps: QueueDeps) -> None:
+    """Отменяет все посты на модерации.
+
+    Сначала отвечает на callback: у Telegram ограничено время на ответ, а отмена
+    многих постов идёт пачками и может занять время.
+    """
+    await callback.answer()
+    user_id, _ = _who(callback)
+    cancelled = await cancel_all_reviews(user_id or 0, deps.review, deps.batch_size)
+    log.info("queue.cancel_all", user_id=user_id, cancelled=cancelled)
+    await callback.message.answer(texts.QUEUE_CANCELLED_ALL.format(count=cancelled))
+    text, keyboard = await render_page(deps, data.tab, data.page, deps.clock())
+    await callback.message.answer(text, reply_markup=keyboard)
 
 
 def _decision(result: ManualPublishResult) -> str:

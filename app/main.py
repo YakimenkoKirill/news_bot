@@ -565,6 +565,8 @@ def build_components(settings: Settings) -> list[Component]:
                     max_per_source=settings.publisher.max_queued_per_source,
                     clock=lambda: datetime.now(UTC),
                     manual=manual_deps,
+                    review=review_deps,
+                    batch_size=settings.pipeline.batch_size,
                     runtime=runtime,
                 ),
                 "errors_deps": ErrorsDeps(
