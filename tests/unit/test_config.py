@@ -288,6 +288,53 @@ def test_ui_unknown_key_rejected(configs_dir: Path) -> None:
         load_settings(configs_dir, "prod")
 
 
+def test_retention_section(configs_dir: Path) -> None:
+    settings = load_settings(configs_dir)
+    assert settings.retention.text_days == 30
+    assert settings.retention.batch_size == 1000
+    assert settings.retention.max_run_s == 60
+    assert settings.scheduler.retention_every_h == 24
+
+
+def test_retention_text_days_must_cover_dedup_window(configs_dir: Path) -> None:
+    """Окно дублей 48 часов: очищать тексты раньше третьих суток нельзя."""
+    (configs_dir / "prod.yaml").write_text("retention:\n  text_days: 2\n", encoding="utf-8")
+    with pytest.raises(ValidationError, match="text_days"):
+        load_settings(configs_dir, "prod")
+
+    (configs_dir / "prod.yaml").write_text("retention:\n  text_days: 3\n", encoding="utf-8")
+    assert load_settings(configs_dir, "prod").retention.text_days == 3
+
+
+def test_retention_window_checked_against_configured_dedup(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text(
+        "dedup:\n  window_h: 240\nretention:\n  text_days: 10\n", encoding="utf-8"
+    )
+    with pytest.raises(ValidationError, match="text_days"):
+        load_settings(configs_dir, "prod")
+
+    (configs_dir / "prod.yaml").write_text(
+        "dedup:\n  window_h: 240\nretention:\n  text_days: 11\n", encoding="utf-8"
+    )
+    assert load_settings(configs_dir, "prod").retention.text_days == 11
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [("text_days", 0), ("batch_size", 0), ("max_run_s", 0)],
+)
+def test_non_positive_retention_values_rejected(configs_dir: Path, key: str, value: int) -> None:
+    (configs_dir / "prod.yaml").write_text(f"retention:\n  {key}: {value}\n", encoding="utf-8")
+    with pytest.raises(ValidationError, match=key):
+        load_settings(configs_dir, "prod")
+
+
+def test_retention_unknown_key_rejected(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text("retention:\n  surprise: 1\n", encoding="utf-8")
+    with pytest.raises(ValidationError, match="surprise"):
+        load_settings(configs_dir, "prod")
+
+
 def test_simhash_max_distance(configs_dir: Path) -> None:
     assert load_settings(configs_dir).dedup.simhash_max_distance == 3
 

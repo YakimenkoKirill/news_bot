@@ -9,6 +9,7 @@ from collections.abc import Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from time import monotonic
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
@@ -363,6 +364,31 @@ def build_components(settings: Settings) -> list[Component]:
                 now - timedelta(days=settings.alerts.retention_days)
             )
 
+    async def retention(now: datetime) -> int:
+        """Очищает тексты старых новостей пачками, не дольше retention.max_run_s.
+
+        Каждая пачка — своя короткая транзакция. Если новостей больше, чем
+        успевает один запуск, остальные очистит следующий.
+
+        Args:
+            now: Текущий момент.
+
+        Returns:
+            Сколько новостей очищено за этот запуск.
+        """
+        cfg = settings.retention
+        before = now - timedelta(days=cfg.text_days)
+        deadline = monotonic() + cfg.max_run_s
+        stripped = 0
+        while True:
+            async with scope() as session:
+                batch = await NewsRepository(session).strip_texts(before, cfg.batch_size)
+            stripped += batch
+            if batch < cfg.batch_size or monotonic() >= deadline:
+                break
+        log.info("retention.stripped", count=stripped, before=before.isoformat())
+        return stripped
+
     async def heartbeat(now: datetime) -> None:
         async with scope() as session:
             await SettingsRepository(session).set(
@@ -381,6 +407,7 @@ def build_components(settings: Settings) -> list[Component]:
             purge_incidents=purge_incidents,
             daily_report=report_sender.send_due,
             recover_stuck=lambda now: recover_stuck(now, publish_deps),
+            retention=retention,
             sink=alerts,
         ),
         settings.scheduler,

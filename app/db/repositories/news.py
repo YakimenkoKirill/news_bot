@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import NewsItem, ProcessedPost, Publication
 from app.domain.enums import NewsStatus, PublicationStatus
-from app.domain.status import ensure_transition
+from app.domain.status import TERMINAL_STATUSES, ensure_transition
 
 TG_MESSAGE_ID_KEY = "msg_id"
 _DIGITS_RE = r"^[0-9]+$"
@@ -459,6 +459,48 @@ class NewsRepository:
             StuckRef(news_id=news_id, title=title, sent=bool(has_sent))
             for news_id, title, has_sent in rows
         ]
+
+    async def strip_texts(self, before: datetime, limit: int) -> int:
+        """Очищает тексты старых новостей в конечных статусах.
+
+        Берутся новости, которым уже некуда двигаться по машине состояний
+        (TERMINAL_STATUSES), созданные раньше before и ещё не очищенные:
+        raw_text становится пустым, clean_text — NULL. Заголовок, адрес, хеши,
+        simhash с частями, cluster_id и raw_meta остаются: они нужны поиску
+        дублей, отчётам и картинкам. Строки, занятые другой транзакцией,
+        пропускаются (SKIP LOCKED), поэтому очистка не мешает нормализации.
+
+        Args:
+            before: Очищаются новости, созданные раньше этого момента.
+            limit: Размер пачки.
+
+        Returns:
+            Сколько новостей очищено.
+
+        Raises:
+            ValueError: limit <= 0.
+        """
+        if limit <= 0:
+            raise ValueError(f"limit должен быть положительным, получено {limit}")
+        selected = (
+            select(NewsItem.id)
+            .where(
+                NewsItem.status.in_(sorted(TERMINAL_STATUSES)),
+                NewsItem.created_at < before,
+                or_(NewsItem.raw_text != "", NewsItem.clean_text.is_not(None)),
+            )
+            .order_by(NewsItem.created_at, NewsItem.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        stmt = (
+            update(NewsItem)
+            .where(NewsItem.id.in_(selected.scalar_subquery()))
+            .values(raw_text="", clean_text=None)
+            .returning(NewsItem.id)
+            .execution_options(synchronize_session=False)
+        )
+        return len((await self._session.scalars(stmt)).all())
 
     async def update_fields(self, news_id: int, **fields: Any) -> bool:
         """Обновляет поля, заполняемые нормализацией и дедупликацией.

@@ -17,7 +17,15 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import structlog
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from pydantic.fields import FieldInfo
 from pydantic_settings import (
     BaseSettings,
@@ -40,6 +48,7 @@ QUIET_HOURS_FORMAT = "%H:%M"
 SIMHASH_BANDS = 4
 SIMHASH_BAND_BITS = 16
 SIMHASH_MAX_DISTANCE = SIMHASH_BANDS - 1
+HOURS_IN_DAY = 24
 QUIET_HOURS_BOUNDS = 2
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
@@ -278,6 +287,7 @@ class SchedulerConfig(BaseModel):
     purge_every_h: float = Field(gt=0)
     daily_report_every_min: float = Field(gt=0)
     recover_every_min: float = Field(gt=0)
+    retention_every_h: float = Field(gt=0)
     misfire_grace_s: int = Field(ge=1)
     failures_before_alert: int = Field(ge=1)
 
@@ -308,6 +318,16 @@ class DailyReportConfig(BaseModel):
     def send_time(self) -> time:
         """Время отправки отчёта в локальном времени канала."""
         return datetime.strptime(self.send_at, QUIET_HOURS_FORMAT).time()
+
+
+class RetentionConfig(BaseModel):
+    """Секция retention: очистка текстов старых новостей."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    text_days: int = Field(ge=1)
+    batch_size: int = Field(ge=1)
+    max_run_s: float = Field(gt=0)
 
 
 class MetricsConfig(BaseModel):
@@ -414,6 +434,7 @@ class Settings(BaseSettings):
     moderation: ModerationConfig
     alerts: AlertsConfig
     scheduler: SchedulerConfig
+    retention: RetentionConfig
     daily_report: DailyReportConfig
     metrics: MetricsConfig
     health: HealthConfig
@@ -428,6 +449,22 @@ class Settings(BaseSettings):
                 return json.loads(text)
             return [part.strip() for part in text.split(",") if part.strip()]
         return value
+
+    @model_validator(mode="after")
+    def _check_retention_covers_dedup(self) -> Settings:
+        """Тексты нельзя очищать раньше, чем по ним ищутся дубли.
+
+        Raises:
+            ValueError: retention.text_days меньше окна dedup.window_h.
+        """
+        needed = int(self.dedup.window_h // HOURS_IN_DAY) + 1
+        if self.retention.text_days < needed:
+            raise ValueError(
+                f"retention.text_days = {self.retention.text_days} меньше окна поиска дублей "
+                f"dedup.window_h = {self.dedup.window_h} ч: нужно не меньше {needed} дней, "
+                "иначе дубли перестанут находиться"
+            )
+        return self
 
     @classmethod
     def settings_customise_sources(

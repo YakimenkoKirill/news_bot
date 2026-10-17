@@ -130,6 +130,7 @@ scheduler:
   purge_every_h: 24
   daily_report_every_min: 5
   recover_every_min: 10   # как часто искать зависшие отправки (publisher.stuck_after_min)
+  retention_every_h: 24   # как часто очищать тексты старых новостей
   misfire_grace_s: 60
   failures_before_alert: 3
 
@@ -141,6 +142,13 @@ daily_report:
   top_sources: 10         # сколько источников показывать в таблице, остальные — строкой «прочие»
   source_name_chars: 18   # до скольких символов обрезать имя источника в таблице
   budget_warn_share: 0.8  # с какой доли дневного бюджета помечать расход «⚠️»
+
+retention:
+  # через сколько дней очищать тексты новостей в конечных статусах
+  # (не меньше окна поиска дублей dedup.window_h, иначе дубли перестанут находиться)
+  text_days: 30
+  batch_size: 1000  # сколько новостей очищать одним запросом
+  max_run_s: 60     # сколько секунд задача работает за один запуск
 
 metrics:
   max_delay_min: 15

@@ -30,6 +30,7 @@ JOB_HEARTBEAT = "heartbeat"
 JOB_PURGE = "purge_incidents"
 JOB_DAILY_REPORT = "daily_report"
 JOB_RECOVER = "recover_stuck"
+JOB_RETENTION = "retention"
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,7 @@ class SchedulerDeps:
         purge_incidents: удаление старых закрытых инцидентов журнала.
         daily_report: ежедневная отправка отчёта администраторам.
         recover_stuck: разбор зависших отправок (recover_stuck).
+        retention: очистка текстов старых новостей.
         sink: Получатель алертов job_failed.
         clock: Источник текущего времени.
     """
@@ -63,6 +65,7 @@ class SchedulerDeps:
     purge_incidents: Job
     daily_report: Job
     recover_stuck: Job
+    retention: Job
     sink: AlertSink
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
 
@@ -161,6 +164,7 @@ def build_scheduler(
             IntervalTrigger(minutes=cfg.daily_report_every_min),
         ),
         (JOB_RECOVER, deps.recover_stuck, IntervalTrigger(minutes=cfg.recover_every_min)),
+        (JOB_RETENTION, deps.retention, IntervalTrigger(hours=cfg.retention_every_h)),
     ]
     for job_id, job, trigger in jobs:
         scheduler.add_job(

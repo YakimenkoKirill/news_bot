@@ -14,6 +14,7 @@ from app.scheduler import (
     JOB_PUBLISH,
     JOB_PURGE,
     JOB_RECOVER,
+    JOB_RETENTION,
     JOB_REVIEW,
     JOB_STALE,
     JobRunner,
@@ -50,6 +51,7 @@ def _deps(sink: Sink | None = None) -> SchedulerDeps:
         purge_incidents=_ok,
         daily_report=_ok,
         recover_stuck=_ok,
+        retention=_ok,
         sink=sink or Sink(),
         clock=lambda: NOW,
     )
@@ -69,6 +71,7 @@ def test_jobs_and_intervals_from_config() -> None:
         JOB_PURGE: timedelta(hours=CFG.purge_every_h),
         JOB_DAILY_REPORT: timedelta(minutes=CFG.daily_report_every_min),
         JOB_RECOVER: timedelta(minutes=CFG.recover_every_min),
+        JOB_RETENTION: timedelta(hours=CFG.retention_every_h),
     }
     assert set(jobs) == set(expected)
     for job_id, interval in expected.items():
@@ -169,6 +172,7 @@ async def test_scheduled_wrapper_runs_job(job_id: str) -> None:
         purge_incidents=_ok,
         daily_report=_ok,
         recover_stuck=_ok,
+        retention=_ok,
         sink=Sink(),
         clock=lambda: NOW,
     )
