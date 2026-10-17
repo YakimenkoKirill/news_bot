@@ -92,6 +92,12 @@ class NewsItem(Base):
         Index("ix_news_items_content_hash", "content_hash"),
         Index("ix_news_items_status_created_at", "status", "created_at"),
         Index("ix_news_items_cluster_id", "cluster_id"),
+        Index("ix_news_items_created_at", "created_at"),
+        Index("ix_news_items_source_status", "source_id", "status"),
+        Index("ix_news_items_simhash_b0_created_at", "simhash_b0", "created_at"),
+        Index("ix_news_items_simhash_b1_created_at", "simhash_b1", "created_at"),
+        Index("ix_news_items_simhash_b2_created_at", "simhash_b2", "created_at"),
+        Index("ix_news_items_simhash_b3_created_at", "simhash_b3", "created_at"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -107,6 +113,10 @@ class NewsItem(Base):
     published_at: Mapped[datetime | None] = mapped_column(_tz(), nullable=True)
     content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     simhash: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    simhash_b0: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    simhash_b1: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    simhash_b2: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    simhash_b3: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[NewsStatus] = mapped_column(
         _enum_column(NewsStatus),
         default=NewsStatus.NEW,
@@ -116,6 +126,7 @@ class NewsItem(Base):
     cluster_id: Mapped[int | None] = mapped_column(
         ForeignKey("news_items.id", ondelete="SET NULL"), nullable=True
     )
+    cluster_sources: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"))
     raw_meta: Mapped[dict[str, Any]] = mapped_column(
         JSONB, default=dict, server_default=text("'{}'::jsonb")
     )
@@ -133,6 +144,7 @@ class ProcessedPost(Base):
     """Пересказ новости, подготовленный моделью; не больше одного на новость."""
 
     __tablename__ = "processed_posts"
+    __table_args__ = (Index("ix_processed_posts_created_at", "created_at"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     news_item_id: Mapped[int] = mapped_column(
@@ -164,6 +176,7 @@ class Publication(Base):
     """Попытка публикации поста в канал."""
 
     __tablename__ = "publications"
+    __table_args__ = (Index("ix_publications_channel_published", "channel_id", "published_at"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     processed_post_id: Mapped[int] = mapped_column(
@@ -175,6 +188,10 @@ class Publication(Base):
     status: Mapped[PublicationStatus] = mapped_column(_enum_column(PublicationStatus))
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     initiated_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    views: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    forwards: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reactions: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stats_at: Mapped[datetime | None] = mapped_column(_tz(), nullable=True)
 
     processed_post: Mapped[ProcessedPost] = relationship(
         back_populates="publications", lazy="raise"
@@ -232,6 +249,31 @@ class Incident(Base):
     last_seen_at: Mapped[datetime] = mapped_column(_tz())
     resolved_at: Mapped[datetime | None] = mapped_column(_tz(), nullable=True)
     resolved_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+
+class AiRequest(Base):
+    """Один запрос к модели: токены, кэш и стоимость.
+
+    Пишется на каждую попытку, в том числе неудачную, поэтому сумма cost за сутки
+    равна реально оплаченному — в отличие от processed_posts.cost, где нет новостей,
+    по которым модель так и не дала разбираемый ответ.
+    """
+
+    __tablename__ = "ai_requests"
+    __table_args__ = (Index("ix_ai_requests_created_at", "created_at"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    news_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("news_items.id", ondelete="SET NULL"), nullable=True
+    )
+    kind: Mapped[str] = mapped_column(String(16))
+    model: Mapped[str] = mapped_column(String(64))
+    prompt_tokens: Mapped[int] = mapped_column(Integer)
+    cached_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    completion_tokens: Mapped[int] = mapped_column(Integer)
+    cost: Mapped[Decimal] = mapped_column(Numeric(COST_PRECISION, COST_SCALE))
+    ok: Mapped[bool] = mapped_column(Boolean)
+    created_at: Mapped[datetime] = mapped_column(_tz(), server_default=func.now())
 
 
 class BotScreen(Base):

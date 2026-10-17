@@ -13,12 +13,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.collectors.base import BaseCollector, RawItem
 from app.db.models import ProcessedPost, Source
-from app.db.repositories.posts import ProcessedPostRepository
+from app.db.repositories.ai_requests import AiRequestRepository
 from app.domain.alerts import AlertEvent
 from app.pipeline.ai.client import AiRawResponse, Message
 from app.publisher.media import ImageCheck
 
 NOT_RELEVANT_MARKER = "нерелевантн"
+SCREEN_MARKER = "Пересказывать новость не нужно"
 
 
 class FakeCollector(BaseCollector):
@@ -34,20 +35,36 @@ class FakeCollector(BaseCollector):
 
 @dataclass
 class FakeDeepSeek:
-    """Модель: отвечает корректным JSON; новость с «нерелевантн» в заголовке — не по теме."""
+    """Модель: отвечает корректным JSON; новость с «нерелевантн» в заголовке — не по теме.
+
+    Отличает запрос отбора от запроса пересказа по системному сообщению, поэтому
+    подходит и для ai.two_stage = true, и для прежнего одного запроса.
+    """
 
     prompt_tokens: int = 1000
     completion_tokens: int = 200
+    screen_prompt_tokens: int = 300
+    screen_completion_tokens: int = 20
     calls: list[list[Message]] = field(default_factory=list)
 
-    async def chat_json(self, messages: list[Message]) -> AiRawResponse:
+    async def chat_json(
+        self, messages: list[Message], *, max_tokens: int | None = None
+    ) -> AiRawResponse:
         self.calls.append(messages)
         user = messages[-1]["content"]
         title_line = next(line for line in user.splitlines() if line.startswith("Заголовок:"))
         relevant = NOT_RELEVANT_MARKER not in title_line.lower()
+        score = 0.9 if relevant else 0.1
+        if SCREEN_MARKER in messages[0]["content"]:
+            payload: dict[str, Any] = {"relevant": relevant, "score": score}
+            return AiRawResponse(
+                json.dumps(payload, ensure_ascii=False),
+                self.screen_prompt_tokens,
+                self.screen_completion_tokens,
+            )
         payload = {
             "relevant": relevant,
-            "score": 0.9 if relevant else 0.1,
+            "score": score,
             "title": "Пересказ главной новости",
             "summary": "Коротко о том, что произошло, без новых фактов.",
             "hashtags": ["новости"],
@@ -101,7 +118,7 @@ class SessionCost:
 
     async def cost_since(self, dt: datetime) -> Decimal:
         async with self.scope() as session:
-            return await ProcessedPostRepository(session).cost_since(dt)
+            return await AiRequestRepository(session).cost_since(dt)
 
 
 async def no_sleep(_: float) -> None:

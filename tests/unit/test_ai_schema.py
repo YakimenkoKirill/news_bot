@@ -5,7 +5,14 @@ import pytest
 
 from app.config import ChannelProfile
 from app.pipeline.ai.client import AiResponseError
-from app.pipeline.ai.schema import AiResult, normalize_hashtags, parse_ai_response
+from app.pipeline.ai.schema import (
+    AiResult,
+    ScreenResult,
+    normalize_hashtags,
+    parse_ai_response,
+    parse_screen_response,
+    parse_summary_response,
+)
 from tests.config_helpers import base_section
 
 PROFILE = ChannelProfile(**{**base_section("channel"), "max_title_chars": 40, "hashtags_max": 3})
@@ -122,3 +129,67 @@ def test_normalize_hashtags_limit_zero() -> None:
 def test_hashtags_must_be_list() -> None:
     with pytest.raises(AiResponseError, match="hashtags"):
         _parse(_payload(hashtags="#один #два"))
+
+
+def _parse_screen(data: dict[str, Any] | str) -> ScreenResult:
+    content = data if isinstance(data, str) else json.dumps(data, ensure_ascii=False)
+    return parse_screen_response(content)
+
+
+def test_valid_screen_response() -> None:
+    assert _parse_screen({"relevant": True, "score": 0.8}) == ScreenResult(relevant=True, score=0.8)
+    assert _parse_screen({"relevant": False, "score": 0}) == ScreenResult(relevant=False, score=0.0)
+
+
+def test_screen_response_in_code_fence() -> None:
+    assert _parse_screen('```json\n{"relevant": true, "score": 1}\n```').score == 1.0
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"relevant": True},
+        {"score": 0.5},
+        {"relevant": True, "score": 1.5},
+        {"relevant": True, "score": -0.1},
+        {"relevant": True, "score": "высокая"},
+        {"relevant": "может быть", "score": 0.5},
+    ],
+    ids=["no-score", "no-relevant", "above-one", "negative", "not-number", "not-bool"],
+)
+def test_bad_screen_response_rejected(data: dict[str, Any]) -> None:
+    with pytest.raises(AiResponseError, match="проверку"):
+        _parse_screen(data)
+
+
+def test_screen_response_with_extra_keys_rejected() -> None:
+    """Лишние ключи в коротком ответе — признак, что модель поняла задачу неверно."""
+    with pytest.raises(AiResponseError, match="проверку"):
+        _parse_screen({"relevant": True, "score": 0.8, "title": "Заголовок"})
+
+
+@pytest.mark.parametrize("content", ["не json", "[]", '"строка"'])
+def test_screen_response_not_object_rejected(content: str) -> None:
+    with pytest.raises(AiResponseError):
+        _parse_screen(content)
+
+
+def test_summary_response_without_relevance_keys() -> None:
+    data = _payload()
+    data.pop("relevant")
+    data.pop("score")
+    result = parse_summary_response(json.dumps(data, ensure_ascii=False), PROFILE)
+    assert result.title == "Новый процессор вышел"
+    assert result.hashtags == ["#технологии", "#процессоры"]
+    assert not hasattr(result, "score")
+
+
+def test_summary_response_ignores_extra_relevance_keys() -> None:
+    result = parse_summary_response(json.dumps(_payload(), ensure_ascii=False), PROFILE)
+    assert result.category == "железо"
+
+
+def test_summary_response_checks_lengths() -> None:
+    data = _payload(title="Очень длинный заголовок, который не влезает в лимит профиля канала")
+    with pytest.raises(AiResponseError, match="title"):
+        parse_summary_response(json.dumps(data, ensure_ascii=False), PROFILE)

@@ -17,11 +17,13 @@ from app.bot.handlers.queue import QueueDeps, render_page
 from app.bot.keyboards import QueueAction, QueueActionType, QueueTab, queue_item_keyboard
 from app.bot.moderation import REVIEW_NOTE_PREFIX
 from app.bot.preview import PreviewDeps
-from app.config import PublisherConfig, Settings
+from app.config import AiConfig, ChannelProfile, PublisherConfig, Settings
 from app.db.models import NewsItem, ProcessedPost, Source
+from app.db.repositories.news import Priority
 from app.domain.enums import NewsStatus, SourceType
 from app.publisher.media import ImageCheck
 from app.publisher.stage_publish import ManualPublishDeps
+from app.runtime_config import RuntimeSnapshot
 from tests.bot_helpers import FakeSession, callback_update, make_bot, message_update
 from tests.config_helpers import base_section, bot_config
 
@@ -59,6 +61,7 @@ class Db:
         title: str | None = None,
         review_note: str | None = None,
         image_url: str | None = "https://cdn.example/a.jpg",
+        cluster_sources: int = 1,
     ) -> None:
         if 1 not in self.sources:
             self.sources[1] = Source(
@@ -75,6 +78,7 @@ class Db:
             image_url=image_url,
             published_at=published_at or NOW,
             created_at=NOW,
+            cluster_sources=cluster_sources,
         )
         self.posts[news_id] = ProcessedPost(
             id=news_id * 10,
@@ -91,36 +95,43 @@ class Db:
         )
 
 
-def _priority(db: Db, news: NewsItem, decay: float) -> float:
+def _priority(db: Db, news: NewsItem, priority: Priority) -> float:
     moment = news.published_at or news.created_at
-    return db.posts[news.id].relevance_score + decay * moment.timestamp() / SECONDS_PER_HOUR
+    bonus = priority.cluster_bonus * min(
+        max(news.cluster_sources - 1, 0), priority.cluster_bonus_max
+    )
+    return (
+        db.posts[news.id].relevance_score
+        + priority.decay_per_h * moment.timestamp() / SECONDS_PER_HOUR
+        + bonus
+    )
 
 
 class NewsRepo:
     def __init__(self, db: Db) -> None:
         self.db = db
 
-    def _ordered(self, statuses: Sequence[NewsStatus], decay: float) -> list[NewsItem]:
+    def _ordered(self, statuses: Sequence[NewsStatus], priority: Priority) -> list[NewsItem]:
         items = [n for n in self.db.news.values() if n.status in statuses and n.id in self.db.posts]
-        return sorted(items, key=lambda n: (-_priority(self.db, n, decay), n.id))
+        return sorted(items, key=lambda n: (-_priority(self.db, n, priority), n.id))
 
     async def list_prepared(
-        self, statuses: Sequence[NewsStatus], decay_per_h: float, limit: int, offset: int
+        self, statuses: Sequence[NewsStatus], priority: Priority, limit: int, offset: int
     ) -> list[tuple[NewsItem, ProcessedPost]]:
-        chunk = self._ordered(statuses, decay_per_h)[offset : offset + limit]
+        chunk = self._ordered(statuses, priority)[offset : offset + limit]
         return [(n, self.db.posts[n.id]) for n in chunk]
 
     async def count_prepared(self, statuses: Sequence[NewsStatus]) -> int:
-        return len(self._ordered(statuses, 0))
+        return len(self._ordered(statuses, Priority(0)))
 
     async def queue_counts_by_source(self, statuses: Sequence[NewsStatus]) -> dict[int, int]:
         counts: dict[int, int] = {}
-        for item in self._ordered(statuses, 0):
+        for item in self._ordered(statuses, Priority(0)):
             counts[item.source_id] = counts.get(item.source_id, 0) + 1
         return counts
 
-    async def claim_next(self, statuses: Sequence[NewsStatus], decay_per_h: float) -> NewsItem:
-        return self._ordered(statuses, decay_per_h)[0]
+    async def claim_next(self, statuses: Sequence[NewsStatus], priority: Priority) -> NewsItem:
+        return self._ordered(statuses, priority)[0]
 
     async def get(self, news_id: int) -> NewsItem | None:
         return self.db.news.get(news_id)
@@ -251,13 +262,76 @@ async def test_order_matches_publish_selection() -> None:
     repo = NewsRepo(db)
     expected: list[int] = []
     while any(n.status is S.APPROVED for n in db.news.values()):
-        chosen = await repo.claim_next([S.APPROVED, S.SCHEDULED], DECAY)
+        chosen = await repo.claim_next([S.APPROVED, S.SCHEDULED], Priority.from_config(CFG))
         expected.append(chosen.id)
         chosen.status = S.PUBLISHED
     assert shown == ["1", "2", "3", "4"]
     titles = [line.split(". ", 1)[1].split(" — ")[0] for line in _items(text)]
     assert titles == [f"Заголовок {news_id}" for news_id in expected]
     assert expected == [4, 2, 1, 3]
+
+
+async def test_sending_post_marked_instead_of_eta() -> None:
+    """Пост в scheduled уже отправляется: вместо прогноза — «⏳ отправляется»."""
+    db = Db()
+    db.add(1, 0.9, status=S.SCHEDULED)
+    db.add(2, 0.5)
+    text, _ = await render_page(_deps(db), QueueTab.QUEUE, 0, NOW)
+    lines = _items(text)
+    assert lines[0] == f"1. Заголовок 1 — Пример · ★0.90 · {texts.QUEUE_SENDING}"
+    assert lines[1] == f"2. Заголовок 2 — Пример · ★0.50 · {_eta(NOW + INTERVAL)}"
+
+
+async def test_cluster_mark_shown_for_several_sources() -> None:
+    """🔁N — о событии написали несколько источников."""
+    db = Db()
+    db.add(1, 0.9, cluster_sources=3)
+    db.add(2, 0.5)
+    text, _ = await render_page(_deps(db), QueueTab.QUEUE, 0, NOW)
+    lines = _items(text)
+    assert lines[0] == f"1. Заголовок 1 — Пример 🔁3 · ★0.90 · {_eta(NOW)}"
+    assert "🔁" not in lines[1]
+
+
+async def test_cluster_mark_hidden_for_single_source() -> None:
+    db = Db()
+    db.add(1, 0.9, cluster_sources=1)
+    text, _ = await render_page(_deps(db), QueueTab.QUEUE, 0, NOW)
+    assert "🔁" not in text
+
+
+class FakeRuntime:
+    """Снимок изменяемых параметров публикации для /queue."""
+
+    def __init__(self, cfg: PublisherConfig) -> None:
+        self.value = RuntimeSnapshot(
+            channel=ChannelProfile(**base_section("channel")),
+            ai=AiConfig(**base_section("ai")),
+            publisher=cfg,
+        )
+
+    async def snapshot(self) -> RuntimeSnapshot:
+        return self.value
+
+
+async def test_eta_follows_runtime_interval() -> None:
+    """Интервал изменили через настройки — прогноз в /queue считается по нему."""
+    db = _db_with(2)
+    cfg = CFG.model_copy(update={"min_interval_min": 120})
+    text, _ = await render_page(
+        replace(_deps(db), runtime=FakeRuntime(cfg)), QueueTab.QUEUE, 0, NOW
+    )
+    lines = _items(text)
+    assert lines[1].endswith(_eta(NOW + timedelta(minutes=120)))
+
+
+async def test_source_load_follows_runtime_limit() -> None:
+    db = _db_with(2)
+    cfg = CFG.model_copy(update={"max_queued_per_source": 2})
+    text, _ = await render_page(
+        replace(_deps(db), runtime=FakeRuntime(cfg)), QueueTab.QUEUE, 0, NOW
+    )
+    assert "🔒2/2" in text
 
 
 async def test_line_has_score_source_and_eta() -> None:

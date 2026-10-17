@@ -3,18 +3,23 @@ from typing import Any
 
 import pytest
 
-from app.config import SchedulerConfig
+from app.config import HealthConfig, SchedulerConfig
 from app.domain.alerts import AlertEvent, AlertKind
 from app.scheduler import (
     JOB_AI,
     JOB_COLLECT,
     JOB_DAILY_REPORT,
+    JOB_HEALTH,
     JOB_HEARTBEAT,
     JOB_NORMALIZE,
+    JOB_POST_STATS,
     JOB_PUBLISH,
     JOB_PURGE,
+    JOB_RECOVER,
+    JOB_RETENTION,
     JOB_REVIEW,
     JOB_STALE,
+    JOB_TG_BEAT,
     JobRunner,
     SchedulerDeps,
     build_scheduler,
@@ -22,6 +27,7 @@ from app.scheduler import (
 from tests.config_helpers import base_section
 
 CFG = SchedulerConfig(**base_section("scheduler"))
+HEALTH = HealthConfig(**base_section("health"))
 NOW = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
 
 
@@ -48,13 +54,18 @@ def _deps(sink: Sink | None = None) -> SchedulerDeps:
         heartbeat=_ok,
         purge_incidents=_ok,
         daily_report=_ok,
+        recover_stuck=_ok,
+        retention=_ok,
+        post_stats=_ok,
+        tg_beat=_ok,
+        health=_ok,
         sink=sink or Sink(),
         clock=lambda: NOW,
     )
 
 
 def test_jobs_and_intervals_from_config() -> None:
-    scheduler, _ = build_scheduler(_deps(), CFG)
+    scheduler, _ = build_scheduler(_deps(), CFG, tg_beat_s=HEALTH.tg_beat_s)
     jobs = {job.id: job for job in scheduler.get_jobs()}
     expected = {
         JOB_COLLECT: timedelta(seconds=CFG.collect_every_s),
@@ -66,6 +77,11 @@ def test_jobs_and_intervals_from_config() -> None:
         JOB_HEARTBEAT: timedelta(seconds=CFG.heartbeat_every_s),
         JOB_PURGE: timedelta(hours=CFG.purge_every_h),
         JOB_DAILY_REPORT: timedelta(minutes=CFG.daily_report_every_min),
+        JOB_RECOVER: timedelta(minutes=CFG.recover_every_min),
+        JOB_RETENTION: timedelta(hours=CFG.retention_every_h),
+        JOB_POST_STATS: timedelta(minutes=CFG.stats_every_min),
+        JOB_TG_BEAT: timedelta(seconds=HEALTH.tg_beat_s),
+        JOB_HEALTH: timedelta(minutes=CFG.health_every_min),
     }
     assert set(jobs) == set(expected)
     for job_id, interval in expected.items():
@@ -73,7 +89,7 @@ def test_jobs_and_intervals_from_config() -> None:
 
 
 def test_jobs_do_not_overlap() -> None:
-    scheduler, _ = build_scheduler(_deps(), CFG)
+    scheduler, _ = build_scheduler(_deps(), CFG, tg_beat_s=HEALTH.tg_beat_s)
     for job in scheduler.get_jobs():
         assert job.max_instances == 1
         assert job.coalesce is True
@@ -82,7 +98,7 @@ def test_jobs_do_not_overlap() -> None:
 
 def test_intervals_change_with_config() -> None:
     cfg = SchedulerConfig(**{**base_section("scheduler"), "collect_every_s": 5})
-    scheduler, _ = build_scheduler(_deps(), cfg)
+    scheduler, _ = build_scheduler(_deps(), cfg, tg_beat_s=HEALTH.tg_beat_s)
     collect = next(job for job in scheduler.get_jobs() if job.id == JOB_COLLECT)
     assert collect.trigger.interval == timedelta(seconds=5)
 
@@ -165,10 +181,15 @@ async def test_scheduled_wrapper_runs_job(job_id: str) -> None:
         heartbeat=_ok,
         purge_incidents=_ok,
         daily_report=_ok,
+        recover_stuck=_ok,
+        retention=_ok,
+        post_stats=_ok,
+        tg_beat=_ok,
+        health=_ok,
         sink=Sink(),
         clock=lambda: NOW,
     )
-    scheduler, _ = build_scheduler(deps, CFG)
+    scheduler, _ = build_scheduler(deps, CFG, tg_beat_s=HEALTH.tg_beat_s)
     job = next(j for j in scheduler.get_jobs() if j.id == job_id)
     await job.func(*job.args)
     assert calls == [job_id]

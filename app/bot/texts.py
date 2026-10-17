@@ -11,6 +11,7 @@ COMMANDS: dict[str, str] = {
     "queue": "подготовленные посты, публикация вне очереди",
     "errors": "журнал ошибок, упавшие новости",
     "report": "отчёт за день, вчера или неделю",
+    "settings": "параметры канала без перезапуска",
     "pause": "приостановить обработку и публикацию",
     "resume": "возобновить работу",
     "sources": "источники: включить, выключить, удалить, проверить",
@@ -110,6 +111,9 @@ ALERT_TEMPLATES = {
     "publish_error": "🔴 <b>Ошибка публикации</b>\n{message}",
     "job_failed": "⚠️ <b>Ошибка фоновой задачи</b>\n{message}",
     "ai_item_failed": "🟠 <b>Модель не смогла обработать новость</b>\n{message}",
+    "stats_unavailable": "🟡 <b>Статистика канала недоступна</b>\n{message}",
+    "tg_down": "🔴 <b>Telethon не на связи</b>\n{message}",
+    "ai_stalled": "🔴 <b>Модель не обрабатывает очередь</b>\n{message}",
 }
 
 QUEUE_TITLES = {"queue": "<b>Очередь публикации</b>", "review": "<b>На модерации</b>"}
@@ -121,6 +125,8 @@ QUEUE_PAUSED = "⏸ Пайплайн на паузе — очередь стои
 QUEUE_NOT_IN_QUEUE = "Пост уже не в очереди: {status}"
 QUEUE_DELETED = "удалён"
 QUEUE_REVIEW_WARNING = " ⚠️"
+QUEUE_SENDING = "⏳ отправляется"
+QUEUE_CLUSTER_MARK = " 🔁{count}"
 
 
 def queue_header(tab: str, count: int, page: int, pages: int) -> str:
@@ -143,11 +149,28 @@ def source_load(used: int, limit: int) -> str:
     return f" {lock}{used}/{limit}"
 
 
+def cluster_mark(sources: int) -> str:
+    """Пометка «🔁N» для события, о котором написали несколько источников."""
+    if sources <= 1:
+        return ""
+    return QUEUE_CLUSTER_MARK.format(count=sources)
+
+
 def queue_line(
-    number: int, title: str, source: str, score: float, eta: str | None, load: str = ""
+    number: int,
+    title: str,
+    source: str,
+    score: float,
+    eta: str | None,
+    load: str = "",
+    cluster: str = "",
 ) -> str:
-    """Строка вкладки «В очереди»; title и source уже экранированы."""
-    line = f"{number}. {title} — {source}{load} · ★{score:.2f}"
+    """Строка вкладки «В очереди»; title и source уже экранированы.
+
+    В поле eta — ожидаемое время выхода или QUEUE_SENDING для поста, который
+    уже отправляется; cluster — пометка числа источников (cluster_mark).
+    """
+    line = f"{number}. {title} — {source}{load}{cluster} · ★{score:.2f}"
     return f"{line} · {eta}" if eta else line
 
 
@@ -176,6 +199,9 @@ ALERT_KIND_LABELS = {
     "publish_error": "ошибка публикации",
     "job_failed": "сбой фоновой задачи",
     "ai_item_failed": "новость не обработана",
+    "stats_unavailable": "статистика канала недоступна",
+    "tg_down": "Telethon не на связи",
+    "ai_stalled": "модель не обрабатывает очередь",
 }
 
 ERRORS_TITLE = "<b>Ошибки</b> · открыто {count}"
@@ -196,6 +222,7 @@ RETRY_REASONS = {
     "bad_ai_response": "модель вернула некорректный ответ",
     "publish_error": "не удалось опубликовать",
     "no_processed_post": "нет пересказа",
+    "publish_unknown": "неизвестно, вышел ли пост: проверьте канал",
 }
 RETRY_HINT_TO_AI = "«Повторить» отправит новость в модель заново."
 RETRY_HINT_TO_QUEUE = "«Повторить» вернёт пост в очередь публикации."
@@ -236,3 +263,46 @@ STATUS_NO_ERRORS = "Открытых ошибок нет"
 
 REPORT_BUILDING = "Считаю…"
 REPORT_FAILED = "Не удалось собрать отчёт, подробности в /errors"
+
+
+SETTINGS_CODES: dict[str, str] = {
+    "topic": "channel.topic",
+    "score": "ai.min_score",
+    "interval": "publisher.min_interval_min",
+    "quiet": "publisher.quiet_hours",
+    "limit": "publisher.max_queued_per_source",
+    "decay": "publisher.score_decay_per_h",
+}
+SETTINGS_LABELS = {
+    "topic": "Тема канала",
+    "score": "Порог интереса",
+    "interval": "Интервал постов",
+    "quiet": "Тихие часы",
+    "limit": "Лимит источника",
+    "decay": "Старение оценки",
+}
+SETTINGS_PRESETS: dict[str, tuple[tuple[str, str], ...]] = {
+    "score": (("0.5", "0.5"), ("0.6", "0.6"), ("0.7", "0.7")),
+    "decay": (("0", "0 — без старения"), ("0.02", "0.02"), ("0.05", "0.05")),
+    "quiet": (("", "Выключить"),),
+}
+SETTINGS_TITLE = "<b>Параметры канала</b>"
+SETTINGS_HINT = "Меняются без перезапуска: новое значение действует не позже {cache_s} с."
+SETTINGS_CHANGED = " · изменено (в конфиге {default})"
+SETTINGS_RESET_BUTTON = "↩️ Как в конфиге"
+SETTINGS_LIST_BUTTON = "◀️ К списку"
+SETTINGS_ASK = (
+    "<b>{label}</b>\nСейчас: {value}\nДопустимо: {hint}\n\n"
+    "Пришлите новое значение сообщением или нажмите кнопку. Выйти — /cancel."
+)
+SETTINGS_SAVED = "✅ {label}: {value}"
+SETTINGS_RESTORED = "↩️ {label} снова как в конфиге: {value}"
+SETTINGS_FAILED = "❌ Не сохранил: {error}\nПришлите другое значение или /cancel."
+SETTINGS_UNKNOWN = "Параметр не найден — откройте /settings заново."
+SETTINGS_EMPTY_VALUE = "пусто"
+
+
+def settings_line(label: str, value: str, default: str | None) -> str:
+    """Строка списка параметров; default не None — значение переопределено."""
+    changed = SETTINGS_CHANGED.format(default=default) if default is not None else ""
+    return f"• <b>{label}</b>: {value}{changed}"

@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 import structlog
@@ -20,11 +20,28 @@ from app.collectors.telegram.convert import message_to_raw_item
 from app.config import TelegramConfig
 from app.db.models import Source
 from app.domain.enums import SourceType
+from app.health import TG_ALIVE_SETTING
 from app.logging import bind_context
 
 log = structlog.get_logger(__name__)
 
 TME_PREFIXES = ("https://t.me/", "http://t.me/", "t.me/", "https://telegram.me/")
+STATS_BATCH = 100
+
+
+@dataclass(frozen=True)
+class PostStats:
+    """Статистика опубликованного поста.
+
+    Attributes:
+        views: Просмотры.
+        forwards: Пересылки.
+        reactions: Сумма реакций всех видов; 0 — реакций нет или они выключены.
+    """
+
+    views: int
+    forwards: int
+    reactions: int
 
 
 class TgSourcesRepo(Protocol):
@@ -44,6 +61,14 @@ class TgNewsRepo(Protocol):
 
     async def max_tg_message_id(self, source_id: int) -> int | None:
         """Наибольший id сообщения источника в БД."""
+        raise NotImplementedError
+
+
+class TgSettingsRepo(Protocol):
+    """Нужная сборщику часть SettingsRepository."""
+
+    async def set(self, key: str, value: Any) -> None:
+        """Сохраняет настройку."""
         raise NotImplementedError
 
 
@@ -67,6 +92,7 @@ class TelegramDeps:
     source_repo: Callable[[Any], TgSourcesRepo]
     news_repo: Callable[[Any], TgNewsRepo]
     health: Callable[[Any], TgHealth]
+    settings_repo: Callable[[Any], TgSettingsRepo] | None = None
 
 
 @dataclass(frozen=True)
@@ -76,14 +102,42 @@ class _Channel:
     entity: Any
 
 
-def channel_username(source: Source) -> str:
-    """Username канала из url источника (https://t.me/name, @name или name)."""
-    value = source.url.strip()
+def username_from_url(url: str) -> str:
+    """Username канала из адреса (https://t.me/name, @name или name)."""
+    value = url.strip()
     for prefix in TME_PREFIXES:
         if value.lower().startswith(prefix):
             value = value[len(prefix) :]
             break
     return value.lstrip("@").split("/")[0].split("?")[0]
+
+
+def channel_username(source: Source) -> str:
+    """Username канала из url источника (https://t.me/name, @name или name)."""
+    return username_from_url(source.url)
+
+
+def _reactions_count(message: Any) -> int:
+    """Сумма реакций сообщения; 0, если реакций нет или они выключены."""
+    reactions = getattr(message, "reactions", None)
+    results = getattr(reactions, "results", None) or []
+    return sum(int(getattr(item, "count", 0) or 0) for item in results)
+
+
+def post_stats(message: Any) -> PostStats:
+    """Собирает статистику одного сообщения канала.
+
+    Args:
+        message: Сообщение Telethon.
+
+    Returns:
+        Просмотры, пересылки и сумма реакций; отсутствующие значения — нули.
+    """
+    return PostStats(
+        views=int(getattr(message, "views", 0) or 0),
+        forwards=int(getattr(message, "forwards", 0) or 0),
+        reactions=_reactions_count(message),
+    )
 
 
 def _chat_id(message: Any) -> int | None:
@@ -92,11 +146,39 @@ def _chat_id(message: Any) -> int | None:
     return channel_id if channel_id is not None else getattr(message, "chat_id", None)
 
 
+def _message_date(message: Any) -> datetime | None:
+    value: datetime | None = getattr(message, "date", None)
+    if value is None:
+        log.warning("telegram.message_without_date", msg_id=getattr(message, "id", None))
+        return None
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _is_older(message: Any, cutoff: datetime) -> bool:
+    """Сообщение старше границы; без даты считается свежим (как при сохранении)."""
+    date = _message_date(message)
+    return date is not None and date < cutoff
+
+
+def _group_messages(messages: Sequence[Any]) -> list[list[Any]]:
+    """Собирает сообщения в альбомы по grouped_id, по возрастанию id."""
+    groups: dict[Any, list[Any]] = {}
+    for message in sorted(messages, key=lambda m: int(m.id)):
+        grouped_id = getattr(message, "grouped_id", None)
+        key = ("album", grouped_id) if grouped_id is not None else ("single", message.id)
+        groups.setdefault(key, []).append(message)
+    return list(groups.values())
+
+
 class TelegramCollector:
     """Компонент: подписка на каналы-источники и догрузка пропущенного при старте.
 
     Поток сообщения: AlbumBuffer -> отсев рекламы (по всем частям альбома) ->
     message_to_raw_item -> add_if_new + SourceHealthTracker.
+
+    Догрузка не уходит глубже max_age_h часов: такие сообщения всё равно отсеял бы
+    фильтр too_old, а в БД они занимали бы место. Новые сообщения в реальном
+    времени этой границы не знают.
     """
 
     name = "telegram_collector"
@@ -106,6 +188,7 @@ class TelegramCollector:
         client: Any,
         deps: TelegramDeps,
         config: TelegramConfig,
+        max_age_h: float,
         *,
         clock: Callable[[], datetime] | None = None,
         album_sleep: Sleep = asyncio.sleep,
@@ -113,6 +196,7 @@ class TelegramCollector:
         self._client = client
         self._deps = deps
         self._config = config
+        self._max_age = timedelta(hours=max_age_h)
         self._rules = AdRules.from_config(config)
         self._clock = clock or (lambda: datetime.now(UTC))
         self._albums = AlbumBuffer(config.album_wait_s, self._on_ready, sleep=album_sleep)
@@ -161,27 +245,150 @@ class TelegramCollector:
     async def _catch_up_channel(self, channel: _Channel) -> None:
         async with self._deps.session_scope() as session:
             min_id = await self._deps.news_repo(session).max_tg_message_id(channel.source.id)
+        cutoff = self._clock() - self._max_age
 
-        async def fetch() -> list[Any]:
-            return [
-                message
-                async for message in self._client.iter_messages(
-                    channel.entity, min_id=min_id or 0, limit=self._config.catch_up_limit
-                )
-            ]
+        async def fetch() -> tuple[list[Any], bool]:
+            """Читает сообщения от новых к старым до первого старше cutoff.
 
-        messages = await with_flood_wait(fetch, self._config)
-        groups: dict[Any, list[Any]] = {}
-        for message in sorted(messages, key=lambda m: int(m.id)):
-            grouped_id = getattr(message, "grouped_id", None)
-            key = ("album", grouped_id) if grouped_id is not None else ("single", message.id)
-            groups.setdefault(key, []).append(message)
+            Старая часть альбома, у которого уже собрана более новая часть, берётся
+            тоже: решение по дате принимается по самому новому сообщению альбома.
+
+            Returns:
+                Собранные сообщения и признак остановки по дате.
+            """
+            collected: list[Any] = []
+            albums: set[Any] = set()
+            async for message in self._client.iter_messages(
+                channel.entity, min_id=min_id or 0, limit=self._config.catch_up_limit
+            ):
+                grouped_id = getattr(message, "grouped_id", None)
+                if _is_older(message, cutoff) and grouped_id not in albums:
+                    return collected, True
+                if grouped_id is not None:
+                    albums.add(grouped_id)
+                collected.append(message)
+            return collected, False
+
+        messages, stopped_by_age = await with_flood_wait(fetch, self._config)
         added = 0
-        for parts in groups.values():
+        for parts in _group_messages(messages):
             added += await self._store_parts(channel, parts)
         async with self._deps.session_scope() as session:
             await self._deps.health(session).on_success(channel.source, added, self._clock())
-        log.info("telegram.caught_up", fetched=len(messages), new_items=added, min_id=min_id)
+        log.info(
+            "telegram.caught_up",
+            fetched=len(messages),
+            new_items=added,
+            min_id=min_id,
+            stopped_by_age=stopped_by_age,
+        )
+
+    async def mark_alive(self, now: datetime) -> bool:
+        """Отмечает в настройках, что Telethon на связи.
+
+        Отметка tg_alive_at пишется только при живом подключении: по её возрасту
+        проверка живости видит отключившийся Telethon. Если репозиторий настроек
+        не передан (например, в тестах сборщика), метод ничего не делает.
+
+        Args:
+            now: Текущий момент.
+
+        Returns:
+            True, если отметка записана.
+        """
+        if self._deps.settings_repo is None:
+            return False
+        if not bool(self._client.is_connected()):
+            log.warning("telegram.not_connected")
+            return False
+        async with self._deps.session_scope() as session:
+            await self._deps.settings_repo(session).set(TG_ALIVE_SETTING, now.isoformat())
+        return True
+
+    async def fetch_post_stats(
+        self, channel_id: int, message_ids: Sequence[int]
+    ) -> dict[int, PostStats]:
+        """Собирает статистику постов канала публикации.
+
+        Сообщения запрашиваются пачками по STATS_BATCH; удалённого сообщения в
+        результате не будет. FloodWait пережидается, как в остальном сборщике.
+
+        Args:
+            channel_id: Канал (id или username канала публикации).
+            message_ids: Id сообщений в канале.
+
+        Returns:
+            Статистика по id сообщения; удалённые и пустые ответы пропущены.
+
+        Raises:
+            TemporaryCollectorError: Telegram просит ждать слишком долго.
+        """
+        if not message_ids:
+            return {}
+        entity = await self._stats_entity(channel_id)
+        collected: dict[int, PostStats] = {}
+        ids = list(message_ids)
+        for start in range(0, len(ids), STATS_BATCH):
+            chunk = ids[start : start + STATS_BATCH]
+
+            async def fetch(batch: list[int] = chunk) -> Any:
+                return await self._client.get_messages(entity, ids=batch)
+
+            messages = await with_flood_wait(fetch, self._config)
+            for message in messages or []:
+                if message is None:
+                    continue
+                collected[int(message.id)] = post_stats(message)
+        log.info("stats.fetched", channel_id=channel_id, requested=len(ids), got=len(collected))
+        return collected
+
+    async def download_photo(self, source_url: str, msg_id: int, max_bytes: int) -> bytes | None:
+        """Скачивает фото сообщения канала-источника.
+
+        Для альбома msg_id указывает на первую часть: её фото и попадает в пост
+        (raw_meta.photo_ids — это идентификаторы самих фото, запросить сообщение
+        по ним нельзя). Сообщение без фото, удалённое сообщение и файл больше
+        max_bytes дают None.
+
+        Args:
+            source_url: Адрес источника (https://t.me/name).
+            msg_id: Id сообщения в канале.
+            max_bytes: Предел размера файла (publisher.image_max_bytes).
+
+        Returns:
+            Байты фото или None, если фото нет или оно слишком большое.
+
+        Raises:
+            TemporaryCollectorError: Telegram просит ждать слишком долго.
+        """
+        username = username_from_url(source_url)
+
+        async def get_message() -> Any:
+            messages = await self._client.get_messages(username, ids=[msg_id])
+            return (list(messages or []) or [None])[0]
+
+        message = await with_flood_wait(get_message, self._config)
+        if message is None or getattr(message, "photo", None) is None:
+            log.info("telegram.photo_missing", msg_id=msg_id, username=username)
+            return None
+
+        async def download() -> Any:
+            return await self._client.download_media(message, file=bytes)
+
+        data = await with_flood_wait(download, self._config)
+        if not isinstance(data, bytes | bytearray):
+            log.info("telegram.photo_not_downloaded", msg_id=msg_id)
+            return None
+        if len(data) > max_bytes:
+            log.info("telegram.photo_too_large", msg_id=msg_id, size=len(data))
+            return None
+        return bytes(data)
+
+    async def _stats_entity(self, channel_id: int) -> Any:
+        async def get_entity() -> Any:
+            return await self._client.get_entity(channel_id)
+
+        return await with_flood_wait(get_entity, self._config)
 
     async def _resolve(self, sources: Sequence[Source]) -> dict[int, _Channel]:
         channels: dict[int, _Channel] = {}

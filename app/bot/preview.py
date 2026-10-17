@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import html
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -17,7 +17,8 @@ from app.config import PublisherConfig
 from app.db.models import ProcessedPost
 from app.publisher.formatter import PostNews, PostSource, build_post
 from app.publisher.limits import FittedPost, fit_post
-from app.publisher.media import ImageCheck
+from app.publisher.media import ImageCheck, PhotoFetcher
+from app.publisher.publisher import as_input_photo
 
 log = structlog.get_logger(__name__)
 
@@ -26,6 +27,11 @@ class ReviewNews(PostNews, Protocol):
     """Новость поста (NewsItem подходит структурно)."""
 
     source_id: int
+
+    @property
+    def raw_meta(self) -> Mapping[str, Any]:
+        """Служебные данные сборщика (msg_id и has_photo для фото Telegram)."""
+        raise NotImplementedError
 
 
 class ReviewNewsRepo(Protocol):
@@ -46,12 +52,12 @@ class PostPreview:
 
     Attributes:
         fitted: Пост, подогнанный под лимиты, как при публикации.
-        image_url: Картинка новости.
+        photo: Картинка новости: адрес или байты фото из Telegram-источника.
         link: Ссылка на источник; в текст поста не выводится.
     """
 
     fitted: FittedPost
-    image_url: str | None
+    photo: str | bytes | None
     link: str
 
 
@@ -64,6 +70,7 @@ class PreviewDeps:
         news_repo, source_repo: Репозитории для сессии.
         check_image: Проверка картинки (та же, что при публикации).
         cfg: Секция publisher (лимиты длины поста).
+        photo_fetcher: Загрузка фото из Telegram-источника; None — только по URL.
     """
 
     session_scope: Callable[[], AbstractAsyncContextManager[Any]]
@@ -71,10 +78,14 @@ class PreviewDeps:
     source_repo: Callable[[Any], ReviewSourceRepo]
     check_image: Callable[[str | None], Awaitable[ImageCheck]]
     cfg: PublisherConfig
+    photo_fetcher: PhotoFetcher | None = None
 
 
 async def build_preview(post: ProcessedPost, deps: PreviewDeps) -> PostPreview | None:
     """Собирает пост тем же build_post и fit_post, что и публикация.
+
+    Картинка берётся так же, как при публикации: по URL или, у новостей из
+    Telegram, загрузкой фото исходного сообщения — черновик выглядит как пост.
 
     Returns:
         Предпросмотр или None, если нет новости или источника.
@@ -85,9 +96,25 @@ async def build_preview(post: ProcessedPost, deps: PreviewDeps) -> PostPreview |
     if news is None or source is None:
         log.error("review.missing_data", post_id=post.id)
         return None
-    image = await deps.check_image(news.image_url)
-    fitted = fit_post(build_post(post, news, source, deps.cfg), has_photo=image.ok, cfg=deps.cfg)
-    return PostPreview(fitted=fitted, image_url=news.image_url, link=news.url)
+    photo = await _preview_photo(news, deps)
+    fitted = fit_post(
+        build_post(post, news, source, deps.cfg), has_photo=photo is not None, cfg=deps.cfg
+    )
+    return PostPreview(fitted=fitted, photo=photo, link=news.url)
+
+
+async def _preview_photo(news: ReviewNews, deps: PreviewDeps) -> str | bytes | None:
+    """Картинка предпросмотра: проверенный URL или фото из Telegram-источника."""
+    if news.image_url:
+        image = await deps.check_image(news.image_url)
+        return news.image_url if image.ok else None
+    if deps.photo_fetcher is None:
+        return None
+    try:
+        return await deps.photo_fetcher.fetch(news)
+    except Exception as exc:
+        log.warning("review.tg_photo_failed", error=repr(exc))
+        return None
 
 
 async def send_preview(
@@ -98,11 +125,11 @@ async def send_preview(
     Returns:
         Отправленное сообщение.
     """
-    if preview.fitted.use_photo and preview.image_url:
+    if preview.fitted.use_photo and preview.photo:
         try:
             return await bot.send_photo(
                 chat_id=chat_id,
-                photo=preview.image_url,
+                photo=as_input_photo(preview.photo),
                 caption=preview.fitted.html,
                 parse_mode=ParseMode.HTML,
                 reply_markup=keyboard,

@@ -1,14 +1,15 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
 
 import pytest
+import structlog.testing
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.methods import SendMessage
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.bot.preview import PostPreview, PreviewDeps, build_preview, mark_message, send_preview
 from app.config import PublisherConfig
@@ -32,6 +33,7 @@ class News:
     source_id: int = 1
     url: str = "https://src.example/a"
     image_url: str | None = "https://cdn.example/a.jpg"
+    raw_meta: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -54,7 +56,27 @@ def _post(news_id: int = 1) -> ProcessedPost:
     )
 
 
-def _deps(news: News | None, source: Source | None, image_ok: bool = True) -> PreviewDeps:
+class Fetcher:
+    """Загрузка фото из Telegram-источника для предпросмотра."""
+
+    def __init__(self, photo: bytes | None = None, error: Exception | None = None) -> None:
+        self.photo = photo
+        self.error = error
+        self.calls: list[int] = []
+
+    async def fetch(self, news: Any) -> bytes | None:
+        self.calls.append(news.source_id)
+        if self.error is not None:
+            raise self.error
+        return self.photo
+
+
+def _deps(
+    news: News | None,
+    source: Source | None,
+    image_ok: bool = True,
+    fetcher: Fetcher | None = None,
+) -> PreviewDeps:
     class NewsRepo:
         def __init__(self, session: object) -> None:
             pass
@@ -84,6 +106,7 @@ def _deps(news: News | None, source: Source | None, image_ok: bool = True) -> Pr
         source_repo=SourceRepo,
         check_image=check,
         cfg=CFG,
+        photo_fetcher=fetcher,
     )
 
 
@@ -107,7 +130,7 @@ async def test_build_preview_with_image() -> None:
     news = News(1)
     preview = await build_preview(_post(), _deps(news, Source()))
     expected = fit_post(build_post(_post(), news, Source(), CFG), has_photo=True, cfg=CFG)
-    assert preview == PostPreview(fitted=expected, image_url=news.image_url, link=news.url)
+    assert preview == PostPreview(fitted=expected, photo=news.image_url, link=news.url)
     assert preview.fitted.use_photo is True
 
 
@@ -116,7 +139,7 @@ async def test_build_preview_without_image() -> None:
     preview = await build_preview(_post(), _deps(news, Source()))
     assert preview is not None
     assert preview.fitted.use_photo is False
-    assert preview.image_url is None
+    assert preview.photo is None
 
 
 async def test_build_preview_rejected_image_is_text() -> None:
@@ -134,6 +157,57 @@ async def _preview(news: News) -> PostPreview:
     preview = await build_preview(_post(), _deps(news, Source()))
     assert preview is not None
     return preview
+
+
+async def test_build_preview_downloads_telegram_photo() -> None:
+    """У новости из Telegram URL нет: фото скачивается и идёт в предпросмотр."""
+    news = News(1, image_url=None, raw_meta={"msg_id": 7, "has_photo": True})
+    fetcher = Fetcher(photo=b"photo-bytes")
+    preview = await build_preview(_post(), _deps(news, Source(), fetcher=fetcher))
+    assert preview is not None
+    assert preview.photo == b"photo-bytes"
+    assert preview.fitted.use_photo is True
+    assert fetcher.calls == [news.source_id]
+
+
+async def test_build_preview_without_fetcher_is_text() -> None:
+    news = News(1, image_url=None, raw_meta={"msg_id": 7, "has_photo": True})
+    preview = await build_preview(_post(), _deps(news, Source()))
+    assert preview is not None
+    assert preview.photo is None
+    assert preview.fitted.use_photo is False
+
+
+async def test_build_preview_photo_error_is_text() -> None:
+    news = News(1, image_url=None, raw_meta={"msg_id": 7, "has_photo": True})
+    fetcher = Fetcher(error=RuntimeError("Telethon отключён"))
+    with structlog.testing.capture_logs() as logs:
+        preview = await build_preview(_post(), _deps(news, Source(), fetcher=fetcher))
+    assert preview is not None
+    assert preview.photo is None
+    assert [e for e in logs if e["event"] == "review.tg_photo_failed"]
+
+
+async def test_url_image_does_not_trigger_download() -> None:
+    fetcher = Fetcher(photo=b"photo-bytes")
+    preview = await build_preview(_post(), _deps(News(1), Source(), fetcher=fetcher))
+    assert preview is not None
+    assert preview.photo == "https://cdn.example/a.jpg"
+    assert fetcher.calls == []
+
+
+async def test_send_preview_sends_bytes_as_file() -> None:
+    news = News(1, image_url=None, raw_meta={"msg_id": 7, "has_photo": True})
+    preview = await build_preview(
+        _post(), _deps(news, Source(), fetcher=Fetcher(photo=b"photo-bytes"))
+    )
+    assert preview is not None
+    bot = FakeBot()
+    await send_preview(bot, CHAT, preview, None)
+    [(kind, kwargs)] = bot.calls
+    assert kind == "photo"
+    assert isinstance(kwargs["photo"], BufferedInputFile)
+    assert kwargs["photo"].data == b"photo-bytes"
 
 
 async def test_send_preview_photo() -> None:

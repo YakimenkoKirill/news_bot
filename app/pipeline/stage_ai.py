@@ -16,12 +16,14 @@ import structlog
 from app.db.models import ProcessedPost
 from app.domain.alerts import AlertEvent, AlertKind, AlertSink
 from app.domain.enums import NewsStatus
+from app.health import AI_OK_SETTING
 from app.logging import bind_context
 from app.pipeline.ai.budget import BudgetExceeded
 from app.pipeline.ai.client import AiFatalError, AiUnavailableError
 from app.pipeline.ai.processor import (
     REASON_BAD_AI_RESPONSE,
     AiRepos,
+    AiRequestRepo,
     ModeratedSource,
     PostRepo,
     ProcessableNews,
@@ -71,6 +73,10 @@ class SettingsGetter(Protocol):
         """Значение настройки."""
         raise NotImplementedError
 
+    async def set(self, key: str, value: Any) -> None:
+        """Сохраняет настройку."""
+        raise NotImplementedError
+
 
 class NewsProcessor(Protocol):
     """Обработчик одной новости (AiProcessor подходит структурно)."""
@@ -105,6 +111,7 @@ class AiStageDeps:
         news_repo: Репозиторий новостей для сессии.
         source_repo: Репозиторий источников для сессии.
         post_repo: Репозиторий пересказов для сессии.
+        request_repo: Репозиторий запросов к модели для сессии.
         settings_repo: Репозиторий настроек для сессии.
         processor: Создаёт обработчик новости для репозиториев одной сессии.
         budget: Проверка дневного бюджета.
@@ -119,6 +126,7 @@ class AiStageDeps:
     news_repo: Callable[[Any], AiNewsRepo]
     source_repo: Callable[[Any], SourceGetter]
     post_repo: Callable[[Any], AiPostRepo]
+    request_repo: Callable[[Any], AiRequestRepo]
     settings_repo: Callable[[Any], SettingsGetter]
     processor: Callable[[AiRepos], NewsProcessor]
     budget: BudgetChecker
@@ -159,7 +167,9 @@ async def process_normalized_batch(now: datetime, deps: AiStageDeps) -> AiStageR
     """Обрабатывает пачку новостей в статусе normalized моделью.
 
     Пауза (настройка paused) и бюджет проверяются до захвата пачки; бюджет — ещё
-    и перед каждой новостью. Пачка захватывается короткой транзакцией, каждая
+    и перед каждой новостью, а при двухэтапной обработке — между отбором и
+    пересказом (тогда транзакция всё равно коммитится, чтобы не потерять запись
+    об оплаченном запросе отбора). Пачка захватывается короткой транзакцией, каждая
     новость обрабатывается в своей транзакции (смена статуса защищена ожидаемым
     статусом), не больше max_concurrency одновременно. BudgetExceeded и ошибки API
     (недоступен или отклоняет запросы) останавливают пачку: необработанные новости
@@ -241,6 +251,7 @@ async def _process_one(item: ClaimableNews, now: datetime, deps: AiStageDeps) ->
         raise _StopBatch("budget") from exc
 
     post: ProcessedPost | None = None
+    out_of_budget = False
     try:
         async with deps.session_scope() as session:
             source = await deps.source_repo(session).get(item.source_id)
@@ -254,13 +265,26 @@ async def _process_one(item: ClaimableNews, now: datetime, deps: AiStageDeps) ->
                 else None
             )
             processor = deps.processor(
-                AiRepos(news=deps.news_repo(session), posts=posts, admit=admit)
+                AiRepos(
+                    news=deps.news_repo(session),
+                    posts=posts,
+                    requests=deps.request_repo(session),
+                    admit=admit,
+                )
             )
-            status = await processor.process(item, source)
+            try:
+                status = await processor.process(item, source)
+            except BudgetExceeded:
+                out_of_budget = True
+                status = None
+            else:
+                await deps.settings_repo(session).set(AI_OK_SETTING, now.isoformat())
             if status is NewsStatus.PENDING_REVIEW:
                 post = await posts.get_by_news(item.id)
     except (AiUnavailableError, AiFatalError) as exc:
         raise _StopBatch("ai_down", exc) from exc
+    if out_of_budget:
+        raise _StopBatch("budget")
 
     if status is NewsStatus.FAILED:
         await _alert_item_failed(item, REASON_BAD_AI_RESPONSE, now, deps)

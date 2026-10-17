@@ -15,8 +15,17 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, get_args
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import structlog
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from pydantic.fields import FieldInfo
 from pydantic_settings import (
     BaseSettings,
@@ -26,6 +35,9 @@ from pydantic_settings import (
 )
 
 from app.domain.alerts import AlertKind
+from app.publisher.slots import in_quiet_hours
+
+log = structlog.get_logger(__name__)
 
 Environment = Literal["dev", "prod"]
 
@@ -33,9 +45,15 @@ CONFIGS_DIR = Path(__file__).resolve().parent.parent / "configs"
 ENVIRONMENTS: tuple[Environment, ...] = get_args(Environment)
 DEFAULT_ENV: Environment = "dev"
 QUIET_HOURS_FORMAT = "%H:%M"
+TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+SIMHASH_BANDS = 4
+SIMHASH_BAND_BITS = 16
+SIMHASH_MAX_DISTANCE = SIMHASH_BANDS - 1
+HOURS_IN_DAY = 24
 QUIET_HOURS_BOUNDS = 2
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+ReportDay = Literal["previous", "current"]
 
 _yaml_data: ContextVar[dict[str, Any] | None] = ContextVar("_yaml_data", default=None)
 
@@ -126,7 +144,19 @@ class DedupConfig(BaseModel):
 
     first_paragraph_chars: int = Field(ge=1)
     window_h: float = Field(gt=0)
-    simhash_max_distance: int = Field(ge=0, le=64)
+    simhash_max_distance: int = Field(ge=0)
+
+    @field_validator("simhash_max_distance")
+    @classmethod
+    def _check_simhash_distance(cls, value: int) -> int:
+        if value > SIMHASH_MAX_DISTANCE:
+            raise ValueError(
+                f"simhash_max_distance: не больше {SIMHASH_MAX_DISTANCE}. Похожие новости "
+                f"ищутся по индексу {SIMHASH_BANDS} частей SimHash по {SIMHASH_BAND_BITS} бит: "
+                f"при расстоянии до {SIMHASH_MAX_DISTANCE} хотя бы одна часть совпадает точно, "
+                "а при большем дубль можно не найти"
+            )
+        return value
 
 
 class PipelineConfig(BaseModel):
@@ -148,7 +178,13 @@ class AiConfig(BaseModel):
     max_concurrency: int = Field(ge=1)
     max_retries: int = Field(ge=0)
     max_input_chars: int = Field(ge=1)
+    max_output_tokens: int = Field(ge=1)
+    two_stage: bool
+    review_foreign: bool
+    screen_input_chars: int = Field(ge=1)
+    screen_max_tokens: int = Field(ge=1)
     price_input_per_1m: Decimal = Field(ge=0)
+    price_input_cached_per_1m: float | None = Field(default=None, ge=0)
     price_output_per_1m: Decimal = Field(ge=0)
     daily_budget: Decimal = Field(gt=0)
     min_score: float = Field(ge=0, le=1)
@@ -179,9 +215,12 @@ class PublisherConfig(BaseModel):
     image_max_bytes: int = Field(ge=1)
     min_interval_min: float = Field(ge=0)
     max_queued_per_source: int = Field(ge=0)
+    stuck_after_min: float = Field(gt=0)
     quiet_hours: list[str]
     max_retries: int = Field(ge=0)
     score_decay_per_h: float = Field(ge=0)
+    cluster_bonus: float = Field(ge=0)
+    cluster_bonus_max: int = Field(ge=0)
     footer_mark: str
     footer_title: str
     footer_url: str
@@ -251,6 +290,10 @@ class SchedulerConfig(BaseModel):
     heartbeat_every_s: float = Field(gt=0)
     purge_every_h: float = Field(gt=0)
     daily_report_every_min: float = Field(gt=0)
+    recover_every_min: float = Field(gt=0)
+    retention_every_h: float = Field(gt=0)
+    stats_every_min: float = Field(gt=0)
+    health_every_min: float = Field(gt=0)
     misfire_grace_s: int = Field(ge=1)
     failures_before_alert: int = Field(ge=1)
 
@@ -262,6 +305,7 @@ class DailyReportConfig(BaseModel):
 
     enabled: bool
     send_at: str
+    report_day: ReportDay
     top_posts: int = Field(ge=1)
     top_sources: int = Field(ge=1)
     source_name_chars: int = Field(ge=1)
@@ -282,6 +326,47 @@ class DailyReportConfig(BaseModel):
         return datetime.strptime(self.send_at, QUIET_HOURS_FORMAT).time()
 
 
+class RuntimeOptions(BaseModel):
+    """Секция runtime: параметры, изменяемые без перезапуска (app/runtime_config.py)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    cache_s: float = Field(gt=0)
+
+
+class StatsConfig(BaseModel):
+    """Секция stats: сбор статистики опубликованных постов."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    delay_h: float = Field(gt=0)
+    max_age_h: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def _check_window(self) -> StatsConfig:
+        """Проверяет, что окно сбора статистики не пустое.
+
+        Raises:
+            ValueError: max_age_h не больше delay_h.
+        """
+        if self.max_age_h <= self.delay_h:
+            raise ValueError(
+                f"stats.max_age_h ({self.max_age_h}) должен быть больше delay_h "
+                f"({self.delay_h}): иначе окно сбора статистики пустое"
+            )
+        return self
+
+
+class RetentionConfig(BaseModel):
+    """Секция retention: очистка текстов старых новостей."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    text_days: int = Field(ge=1)
+    batch_size: int = Field(ge=1)
+    max_run_s: float = Field(gt=0)
+
+
 class MetricsConfig(BaseModel):
     """Секция metrics: цели MVP для отчёта по тестовому прогону."""
 
@@ -300,6 +385,9 @@ class HealthConfig(BaseModel):
     max_age_s: float = Field(gt=0)
     db_timeout_s: float = Field(gt=0)
     startup_grace_s: float = Field(ge=0)
+    tg_beat_s: float = Field(gt=0)
+    tg_max_silence_s: float = Field(gt=0)
+    ai_backlog_min: float = Field(gt=0)
 
 
 class BackupConfig(BaseModel):
@@ -386,6 +474,9 @@ class Settings(BaseSettings):
     moderation: ModerationConfig
     alerts: AlertsConfig
     scheduler: SchedulerConfig
+    runtime: RuntimeOptions
+    stats: StatsConfig
+    retention: RetentionConfig
     daily_report: DailyReportConfig
     metrics: MetricsConfig
     health: HealthConfig
@@ -400,6 +491,22 @@ class Settings(BaseSettings):
                 return json.loads(text)
             return [part.strip() for part in text.split(",") if part.strip()]
         return value
+
+    @model_validator(mode="after")
+    def _check_retention_covers_dedup(self) -> Settings:
+        """Тексты нельзя очищать раньше, чем по ним ищутся дубли.
+
+        Raises:
+            ValueError: retention.text_days меньше окна dedup.window_h.
+        """
+        needed = int(self.dedup.window_h // HOURS_IN_DAY) + 1
+        if self.retention.text_days < needed:
+            raise ValueError(
+                f"retention.text_days = {self.retention.text_days} меньше окна поиска дублей "
+                f"dedup.window_h = {self.dedup.window_h} ч: нужно не меньше {needed} дней, "
+                "иначе дубли перестанут находиться"
+            )
+        return self
 
     @classmethod
     def settings_customise_sources(
@@ -467,6 +574,30 @@ def _check_yaml_sections(data: dict[str, Any]) -> None:
         )
 
 
+def config_warnings(settings: Settings) -> list[str]:
+    """Несогласованности конфигурации, которые не запрещают запуск.
+
+    Args:
+        settings: Провалидированные настройки.
+
+    Returns:
+        Сообщения для лога; пустой список, если всё согласовано.
+    """
+    messages: list[str] = []
+    report = settings.daily_report
+    window = settings.publisher.quiet_window
+    if (
+        report.enabled
+        and report.report_day == "current"
+        and (window is None or not in_quiet_hours(report.send_time, window))
+    ):
+        messages.append(
+            f"daily_report.send_at = {report.send_at} вне publisher.quiet_hours: "
+            "отчёт за текущие сутки уйдёт до конца публикаций"
+        )
+    return messages
+
+
 def load_settings(configs_dir: Path | None = None, env: str | None = None) -> Settings:
     """Загружает настройки без кэша.
 
@@ -491,9 +622,12 @@ def load_settings(configs_dir: Path | None = None, env: str | None = None) -> Se
     _check_yaml_sections(data)
     token = _yaml_data.set(data)
     try:
-        return Settings(env=env_name)
+        settings = Settings(env=env_name)
     finally:
         _yaml_data.reset(token)
+    for message in config_warnings(settings):
+        log.warning("config.inconsistent", message=message)
+    return settings
 
 
 @lru_cache(maxsize=1)
@@ -510,11 +644,25 @@ class TestDatabaseSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     test_database_url: str | None = None
+    require_test_db: str | None = None
 
 
 def get_test_database_url() -> str | None:
     """Возвращает TEST_DATABASE_URL из окружения или .env, если он задан."""
     return TestDatabaseSettings().test_database_url or None
+
+
+def require_test_db() -> bool:
+    """Обязательны ли интеграционные тесты (REQUIRE_TEST_DB).
+
+    В CI переменная выставлена: без доступной тестовой БД тесты должны падать,
+    а не пропускаться, иначе опечатка в workflow оставит job зелёным.
+
+    Returns:
+        True, если REQUIRE_TEST_DB включает строгий режим.
+    """
+    value = TestDatabaseSettings().require_test_db
+    return str(value).strip().lower() in TRUE_VALUES
 
 
 def child_process_env(**extra: str) -> dict[str, str]:

@@ -30,6 +30,7 @@ from app.bot.moderation import REVIEW_NOTE_PREFIX
 from app.bot.preview import PreviewDeps, build_preview, mark_message, send_preview
 from app.config import PublisherConfig
 from app.db.models import NewsItem, ProcessedPost
+from app.db.repositories.news import Priority
 from app.domain.enums import NewsStatus
 from app.pipeline.ai.prompts import truncate_words
 from app.publisher.slots import queue_eta
@@ -40,6 +41,7 @@ from app.publisher.stage_publish import (
     ManualPublishResult,
     publish_now,
 )
+from app.runtime_config import RuntimeSource
 
 log = structlog.get_logger(__name__)
 
@@ -58,7 +60,7 @@ class QueueNewsRepo(Protocol):
     async def list_prepared(
         self,
         statuses: Sequence[NewsStatus],
-        decay_per_h: float,
+        priority: Priority,
         limit: int,
         offset: int,
     ) -> Sequence[tuple[NewsItem, ProcessedPost]]:
@@ -132,6 +134,7 @@ class QueueDeps:
         max_per_source: Лимит постов источника в очереди; 0 — без лимита.
         clock: Текущее время.
         manual: Зависимости публикации вне очереди (publish_now).
+        runtime: Изменяемые на лету параметры; None — значения из yaml.
     """
 
     session_scope: Callable[[], AbstractAsyncContextManager[Any]]
@@ -149,6 +152,7 @@ class QueueDeps:
     max_per_source: int
     clock: Callable[[], datetime]
     manual: ManualPublishDeps
+    runtime: RuntimeSource | None = None
 
 
 def _zone(tz: str | ZoneInfo) -> ZoneInfo:
@@ -174,7 +178,8 @@ async def render_page(
         HTML-текст и клавиатура.
     """
     statuses = QUEUE_TAB_STATUSES[tab]
-    cfg = deps.publisher_cfg
+    cfg = deps.publisher_cfg if deps.runtime is None else (await deps.runtime.snapshot()).publisher
+    max_per_source = cfg.max_queued_per_source if deps.runtime is not None else deps.max_per_source
     async with deps.session_scope() as session:
         news_repo = deps.news_repo(session)
         total = await news_repo.count_prepared(statuses)
@@ -185,7 +190,9 @@ async def render_page(
         page = min(max(page, 0), pages - 1)
         offset = page * deps.page_size
         rows = list(
-            await news_repo.list_prepared(statuses, cfg.score_decay_per_h, deps.page_size, offset)
+            await news_repo.list_prepared(
+                statuses, Priority.from_config(cfg), deps.page_size, offset
+            )
         )
         source_repo = deps.source_repo(session)
         names: dict[int, str] = {}
@@ -197,7 +204,7 @@ async def render_page(
         last = await deps.publication_repo(session).last_published_at(deps.channel_id)
         load = (
             await news_repo.queue_counts_by_source(QUEUE_TAB_STATUSES[QueueTab.QUEUE])
-            if deps.max_per_source
+            if max_per_source
             else {}
         )
 
@@ -223,7 +230,9 @@ async def render_page(
         source_name = html.escape(names[news.source_id])
         score = post.relevance_score
         if tab is QueueTab.QUEUE:
-            eta_text = texts.queue_eta_text(eta.astimezone(zone), today) if eta else None
+            eta_text: str | None = texts.QUEUE_SENDING
+            if news.status is not NewsStatus.SCHEDULED:
+                eta_text = texts.queue_eta_text(eta.astimezone(zone), today) if eta else None
             used = load.get(news.source_id, 0)
             lines.append(
                 texts.queue_line(
@@ -232,7 +241,8 @@ async def render_page(
                     source_name,
                     score,
                     eta_text,
-                    texts.source_load(used, deps.max_per_source),
+                    texts.source_load(used, max_per_source),
+                    texts.cluster_mark(news.cluster_sources or 1),
                 )
             )
         else:

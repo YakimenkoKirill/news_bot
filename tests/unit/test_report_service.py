@@ -18,6 +18,7 @@ from app.reports.daily import (
     Publications,
     Quality,
     QueueState,
+    Readers,
     Spending,
 )
 from app.reports.metrics import Period
@@ -118,6 +119,7 @@ def _empty_report(period: Period) -> DailyReport:
         quality=Quality(),
         queue=QueueState(),
         errors=Errors(),
+        readers=Readers(),
         previous=Headline(),
     )
 

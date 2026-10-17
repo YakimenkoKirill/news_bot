@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -17,14 +18,19 @@ from app.components import (
     SchedulerComponent,
 )
 from app.config import CONFIGS_DIR, Settings, load_settings
+from app.db.repositories.news import Priority
 from app.domain.alerts import AlertEvent
 from app.main import Application, Component, build_components
+from app.pipeline.queue_limit import QueueAdmission
 from app.scheduler import JobRunner
+
+PRIORITY = Priority(decay_per_h=0.02, cluster_bonus=0.05, cluster_bonus_max=3)
 
 EXPECTED_ORDER = [
     "database",
     "start_marker",
     "queue_trim",
+    "recover_stuck",
     "http_client",
     "ai_client",
     "bot",
@@ -59,13 +65,13 @@ async def test_build_components_order_and_wiring(settings: Settings) -> None:
     try:
         assert [c.name for c in components] == EXPECTED_ORDER
         assert isinstance(components[0], DatabaseComponent)
-        assert isinstance(components[4], ClosingComponent)
-        assert isinstance(components[5], BotPollingComponent)
-        assert isinstance(components[7], SchedulerComponent)
+        assert isinstance(components[5], ClosingComponent)
+        assert isinstance(components[6], BotPollingComponent)
+        assert isinstance(components[8], SchedulerComponent)
     finally:
+        await components[7].stop()
         await components[6].stop()
         await components[5].stop()
-        await components[4].stop()
         await components[0].stop()
 
 
@@ -249,11 +255,15 @@ async def test_closing_component() -> None:
 
 
 async def test_queue_trim_component_trims_on_start(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[int, float]] = []
+    calls: list[tuple[int, Priority]] = []
 
-    async def fake_trim(repos: object, max_per_source: int, decay_per_h: float) -> int:
-        calls.append((max_per_source, decay_per_h))
+    async def fake_trim(repos: object, max_per_source: int, priority: Priority) -> int:
+        calls.append((max_per_source, priority))
         return 2
+
+    admission = QueueAdmission(
+        news_repo=MagicMock(), source_repo=MagicMock(), max_per_source=4, priority=PRIORITY
+    )
 
     monkeypatch.setattr(main_module, "trim_queue", fake_trim)
 
@@ -261,14 +271,14 @@ async def test_queue_trim_component_trims_on_start(monkeypatch: pytest.MonkeyPat
     async def scope() -> AsyncIterator[Any]:
         yield object()
 
-    component = main_module.QueueTrimComponent(scope, 4, 0.02)
+    component = main_module.QueueTrimComponent(scope, admission)
     await component.start()
     await component.stop()
-    assert calls == [(4, 0.02)]
+    assert calls == [(4, PRIORITY)]
 
 
 async def test_queue_trim_failure_is_raised(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def failing(repos: object, max_per_source: int, decay_per_h: float) -> int:
+    async def failing(repos: object, max_per_source: int, priority: Priority) -> int:
         raise RuntimeError("БД недоступна")
 
     monkeypatch.setattr(main_module, "trim_queue", failing)
@@ -278,4 +288,7 @@ async def test_queue_trim_failure_is_raised(monkeypatch: pytest.MonkeyPatch) -> 
         yield object()
 
     with pytest.raises(RuntimeError):
-        await main_module.QueueTrimComponent(scope, 4, 0.02).start()
+        admission = QueueAdmission(
+            news_repo=MagicMock(), source_repo=MagicMock(), max_per_source=4, priority=PRIORITY
+        )
+        await main_module.QueueTrimComponent(scope, admission).start()

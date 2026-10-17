@@ -12,9 +12,12 @@ from app.reports.daily import (
     Errors,
     Funnel,
     Headline,
+    KindSpending,
     Publications,
     Quality,
     QueueState,
+    Readers,
+    ReadPost,
     SourceStats,
     Spending,
     TopPost,
@@ -42,6 +45,7 @@ def _report(**overrides: object) -> DailyReport:
         "quality": Quality(),
         "queue": QueueState(),
         "errors": Errors(),
+        "readers": Readers(),
         "previous": Headline(),
     }
     fields.update(overrides)
@@ -106,11 +110,28 @@ def _full() -> DailyReport:
         spending=Spending(
             cost=Decimal("0.21"),
             requests=62,
+            failed=3,
             prompt_tokens=45200,
+            cached_tokens=11300,
             completion_tokens=18300,
+            by_kind=(
+                KindSpending(kind="screen", requests=50, cost=Decimal("0.03")),
+                KindSpending(kind="summary", requests=12, cost=Decimal("0.18")),
+            ),
             budget_share=0.42,
             cost_per_post=Decimal("0.0175"),
             month_to_date=Decimal("3.4"),
+        ),
+        readers=Readers(
+            posts=20,
+            views=48000,
+            forwards=120,
+            reactions=340,
+            top=(
+                ReadPost(title="Ставка сохранена", views=5200, url="https://t.me/c/1/10"),
+                ReadPost(title="Без ссылки", views=4100, url=None),
+            ),
+            by_source=(("Bell", 1240), ("Экономист", 980)),
         ),
         quality=Quality(
             delay_median_min=12.5,
@@ -263,6 +284,61 @@ def test_spending_block() -> None:
     assert "⚠️" not in text.split("<b>Качество</b>")[0].split("<b>Модель</b>")[1]
 
 
+def test_stages_line_in_spending_block() -> None:
+    text = _text(_full())
+    assert "отбор: 50 запросов, $0.03; пересказ: 12, $0.18" in text
+
+
+def test_stages_line_hidden_without_screen_requests() -> None:
+    spending = Spending(
+        requests=5,
+        prompt_tokens=100,
+        by_kind=(KindSpending(kind="summary", requests=5, cost=Decimal("0.05")),),
+    )
+    model_block = _text(_report(spending=spending)).split("<b>Модель</b>")[1]
+    assert "отбор" not in model_block
+    assert "пересказ" not in model_block
+
+
+def test_stages_line_declines_requests_word() -> None:
+    spending = Spending(
+        requests=2,
+        by_kind=(
+            KindSpending(kind="screen", requests=1, cost=Decimal("0.01")),
+            KindSpending(kind="summary", requests=1, cost=Decimal("0.02")),
+        ),
+    )
+    assert "отбор: 1 запрос, $0.01; пересказ: 1, $0.02" in _text(_report(spending=spending))
+
+
+def test_unknown_request_kind_shown_as_is() -> None:
+    spending = Spending(
+        requests=3,
+        by_kind=(
+            KindSpending(kind="screen", requests=2, cost=Decimal("0.01")),
+            KindSpending(kind="verify", requests=1, cost=Decimal("0.04")),
+        ),
+    )
+    assert "отбор: 2 запроса, $0.01; verify: 1, $0.04" in _text(_report(spending=spending))
+
+
+def test_cache_and_failed_requests_in_spending_block() -> None:
+    text = _text(_full())
+    assert "Из кэша 25% входных токенов" in text
+    assert "Неудачных запросов: 3" in text
+
+
+def test_cache_line_hidden_without_input_tokens() -> None:
+    model_block = _text(_report(spending=Spending(requests=0))).split("<b>Модель</b>")[1]
+    assert "Из кэша" not in model_block
+    assert "Неудачных запросов" not in model_block
+
+
+def test_cache_line_shows_zero_share() -> None:
+    spending = Spending(prompt_tokens=1000, cached_tokens=0, requests=1)
+    assert "Из кэша 0% входных токенов" in _text(_report(spending=spending))
+
+
 def test_budget_warning_above_threshold() -> None:
     report = _report(spending=Spending(cost=Decimal("0.45"), budget_share=0.9))
     model_block = _text(report).split("<b>Модель</b>")[1]
@@ -272,6 +348,27 @@ def test_budget_warning_above_threshold() -> None:
 def test_budget_warning_at_threshold() -> None:
     report = _report(spending=Spending(budget_share=CFG.budget_warn_share))
     assert "⚠️" in _text(report).split("<b>Модель</b>")[1]
+
+
+def test_readers_block() -> None:
+    text = _text(_full())
+    assert "<b>Читатели</b>" in text
+    assert "Просмотров: 48 000 · на пост 2 400 · постов со статистикой: 20" in text
+    assert "Пересылок: 120 · реакций: 340" in text
+    assert '• <a href="https://t.me/c/1/10">5 200 Ставка сохранена</a>' in text
+    assert "• 4 100 Без ссылки" in text
+    assert "Просмотры на пост: Bell 1 240, Экономист 980" in text
+
+
+def test_readers_block_hidden_without_stats() -> None:
+    assert "<b>Читатели</b>" not in _text(_report(readers=Readers()))
+
+
+def test_readers_block_without_forwards_and_reactions() -> None:
+    readers = Readers(posts=2, views=100, forwards=0, reactions=0)
+    block = _text(_report(readers=readers))
+    assert "Просмотров: 100 · на пост 50 · постов со статистикой: 2" in block
+    assert "Пересылок" not in block
 
 
 def test_quality_marks_targets() -> None:

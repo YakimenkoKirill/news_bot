@@ -24,6 +24,7 @@ from app.config import (
 )
 from app.db.base import session_scope
 from app.db.models import NewsItem, ProcessedPost, Publication, Source
+from app.db.repositories.ai_requests import AiRequestRepository
 from app.db.repositories.misc import KeywordRepository, SettingsRepository
 from app.db.repositories.news import NewsRepository
 from app.db.repositories.posts import ProcessedPostRepository, PublicationRepository
@@ -128,17 +129,20 @@ class Pipeline:
         )
         profile = ChannelProfile(**base_section("channel"))
 
+        self.budget = BudgetGuard(SessionCost(self.scope), self.sink, self.ai_cfg, TZ)
+
         def processor(repos: AiRepos) -> AiProcessor:
-            return AiProcessor(self.deepseek, profile, repos, self.ai_cfg)
+            return AiProcessor(self.deepseek, profile, repos, self.ai_cfg, budget=self.budget)
 
         self.ai = AiStageDeps(
             session_scope=self.scope,
             news_repo=NewsRepository,
             source_repo=SourceRepository,
             post_repo=ProcessedPostRepository,
+            request_repo=AiRequestRepository,
             settings_repo=SettingsRepository,
             processor=processor,
-            budget=BudgetGuard(SessionCost(self.scope), self.sink, self.ai_cfg, TZ),
+            budget=self.budget,
             notifier=self.notifier,
             sink=self.sink,
             batch_size=20,
@@ -257,7 +261,7 @@ async def test_irrelevant_news_filtered(
         item = (await session.scalars(select(NewsItem))).one()
         post_count = await session.scalar(select(func.count()).select_from(ProcessedPost))
     assert item.reject_reason == "not_relevant"
-    assert post_count == 1
+    assert post_count == 0, "при двухэтапной обработке пересказ не запрашивается"
     assert (await publish_due(pipeline_now, pipe.publish)).skipped == "empty"
 
 
@@ -320,7 +324,7 @@ async def test_budget_exceeded_keeps_news_normalized(
     await pipe.run_ai()
     statuses = await pipe.statuses()
     assert sorted(statuses.values()) == sorted([NewsStatus.APPROVED, NewsStatus.NORMALIZED])
-    assert len(pipe.deepseek.calls) == 1
+    assert len(pipe.deepseek.calls) == 2, "первая новость: отбор и пересказ"
     assert any(event.kind.value == "budget_exceeded" for event in pipe.sink.events)
 
 

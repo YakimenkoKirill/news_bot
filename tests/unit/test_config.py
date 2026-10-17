@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import structlog.testing
 import yaml
 from pydantic import ValidationError
 
@@ -152,7 +153,10 @@ def test_repository_configs_are_valid() -> None:
 
 def test_alerts_silent_kinds_and_message_limit(configs_dir: Path) -> None:
     settings = load_settings(configs_dir)
-    assert settings.alerts.silent_kinds == [AlertKind.AI_ITEM_FAILED]
+    assert settings.alerts.silent_kinds == [
+        AlertKind.AI_ITEM_FAILED,
+        AlertKind.STATS_UNAVAILABLE,
+    ]
     assert settings.alerts.max_message_chars == 2000
 
 
@@ -195,9 +199,70 @@ def test_bot_error_preview_chars(configs_dir: Path) -> None:
 def test_daily_report_keys(configs_dir: Path) -> None:
     settings = load_settings(configs_dir)
     assert settings.daily_report.enabled is True
-    assert settings.daily_report.send_at == "23:30"
-    assert settings.daily_report.send_time.hour == 23
+    assert settings.daily_report.send_at == "00:05"
+    assert settings.daily_report.send_time.hour == 0
+    assert settings.daily_report.send_time.minute == 5
+    assert settings.daily_report.report_day == "previous"
     assert settings.scheduler.daily_report_every_min == 5
+
+
+def test_report_day_current_allowed(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text(
+        'daily_report:\n  report_day: "current"\n  send_at: "01:00"\n', encoding="utf-8"
+    )
+    assert load_settings(configs_dir, "prod").daily_report.report_day == "current"
+
+
+def test_invalid_report_day_rejected(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text(
+        'daily_report:\n  report_day: "вчера"\n', encoding="utf-8"
+    )
+    with pytest.raises(ValidationError, match="report_day"):
+        load_settings(configs_dir, "prod")
+
+
+def test_default_report_day_without_warning(configs_dir: Path) -> None:
+    """previous в тихие часы — предупреждений нет."""
+    with structlog.testing.capture_logs() as logs:
+        load_settings(configs_dir)
+    assert [entry for entry in logs if entry["event"] == "config.inconsistent"] == []
+
+
+def test_current_report_day_outside_quiet_hours_warns(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text(
+        'daily_report:\n  report_day: "current"\n  send_at: "23:30"\n', encoding="utf-8"
+    )
+    with structlog.testing.capture_logs() as logs:
+        settings = load_settings(configs_dir, "prod")
+    warnings = [entry for entry in logs if entry["event"] == "config.inconsistent"]
+    assert len(warnings) == 1
+    assert warnings[0]["log_level"] == "warning"
+    assert "до конца публикаций" in warnings[0]["message"]
+    assert config.config_warnings(settings)
+
+
+def test_current_report_day_inside_quiet_hours_without_warning(configs_dir: Path) -> None:
+    """send_at внутри тихих часов 00:00–07:00: публикаций за сутки уже не будет."""
+    (configs_dir / "prod.yaml").write_text(
+        'daily_report:\n  report_day: "current"\n  send_at: "00:30"\n', encoding="utf-8"
+    )
+    assert config.config_warnings(load_settings(configs_dir, "prod")) == []
+
+
+def test_disabled_report_does_not_warn(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text(
+        'daily_report:\n  enabled: false\n  report_day: "current"\n  send_at: "23:30"\n',
+        encoding="utf-8",
+    )
+    assert config.config_warnings(load_settings(configs_dir, "prod")) == []
+
+
+def test_without_quiet_hours_current_report_day_warns(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text(
+        'publisher:\n  quiet_hours: []\ndaily_report:\n  report_day: "current"\n',
+        encoding="utf-8",
+    )
+    assert config.config_warnings(load_settings(configs_dir, "prod")) != []
 
 
 @pytest.mark.parametrize("bad", ["25:00", "23-30", "вечером", ""])
@@ -223,6 +288,169 @@ def test_ui_batch_size_must_be_positive(configs_dir: Path) -> None:
 def test_ui_unknown_key_rejected(configs_dir: Path) -> None:
     (configs_dir / "prod.yaml").write_text("ui:\n  surprise: 1\n", encoding="utf-8")
     with pytest.raises(ValidationError, match="surprise"):
+        load_settings(configs_dir, "prod")
+
+
+def test_review_foreign_default(configs_dir: Path) -> None:
+    assert load_settings(configs_dir).ai.review_foreign is True
+
+
+def test_review_foreign_can_be_disabled(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text("ai:\n  review_foreign: false\n", encoding="utf-8")
+    assert load_settings(configs_dir, "prod").ai.review_foreign is False
+
+
+def test_allowed_languages_untouched(configs_dir: Path) -> None:
+    """Значение задаёт человек: по умолчанию в канал идут только русские новости."""
+    assert load_settings(configs_dir).filters.allowed_languages == ["ru"]
+
+
+def test_stats_section(configs_dir: Path) -> None:
+    settings = load_settings(configs_dir)
+    assert settings.stats.delay_h == 24
+    assert settings.stats.max_age_h == 72
+    assert settings.scheduler.stats_every_min == 60
+
+
+def test_stats_window_must_not_be_empty(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text(
+        "stats:\n  delay_h: 48\n  max_age_h: 48\n", encoding="utf-8"
+    )
+    with pytest.raises(ValidationError, match="max_age_h"):
+        load_settings(configs_dir, "prod")
+
+
+@pytest.mark.parametrize("key", ["delay_h", "max_age_h"])
+def test_non_positive_stats_hours_rejected(configs_dir: Path, key: str) -> None:
+    (configs_dir / "prod.yaml").write_text(f"stats:\n  {key}: 0\n", encoding="utf-8")
+    with pytest.raises(ValidationError, match=key):
+        load_settings(configs_dir, "prod")
+
+
+def test_cluster_bonus_keys(configs_dir: Path) -> None:
+    publisher = load_settings(configs_dir).publisher
+    assert publisher.cluster_bonus == 0.05
+    assert publisher.cluster_bonus_max == 3
+
+
+def test_zero_cluster_bonus_allowed(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text(
+        "publisher:\n  cluster_bonus: 0\n  cluster_bonus_max: 0\n", encoding="utf-8"
+    )
+    publisher = load_settings(configs_dir, "prod").publisher
+    assert (publisher.cluster_bonus, publisher.cluster_bonus_max) == (0, 0)
+
+
+@pytest.mark.parametrize("key", ["cluster_bonus", "cluster_bonus_max"])
+def test_negative_cluster_bonus_rejected(configs_dir: Path, key: str) -> None:
+    (configs_dir / "prod.yaml").write_text(f"publisher:\n  {key}: -1\n", encoding="utf-8")
+    with pytest.raises(ValidationError, match=key):
+        load_settings(configs_dir, "prod")
+
+
+def test_retention_section(configs_dir: Path) -> None:
+    settings = load_settings(configs_dir)
+    assert settings.retention.text_days == 30
+    assert settings.retention.batch_size == 1000
+    assert settings.retention.max_run_s == 60
+    assert settings.scheduler.retention_every_h == 24
+
+
+def test_retention_text_days_must_cover_dedup_window(configs_dir: Path) -> None:
+    """Окно дублей 48 часов: очищать тексты раньше третьих суток нельзя."""
+    (configs_dir / "prod.yaml").write_text("retention:\n  text_days: 2\n", encoding="utf-8")
+    with pytest.raises(ValidationError, match="text_days"):
+        load_settings(configs_dir, "prod")
+
+    (configs_dir / "prod.yaml").write_text("retention:\n  text_days: 3\n", encoding="utf-8")
+    assert load_settings(configs_dir, "prod").retention.text_days == 3
+
+
+def test_retention_window_checked_against_configured_dedup(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text(
+        "dedup:\n  window_h: 240\nretention:\n  text_days: 10\n", encoding="utf-8"
+    )
+    with pytest.raises(ValidationError, match="text_days"):
+        load_settings(configs_dir, "prod")
+
+    (configs_dir / "prod.yaml").write_text(
+        "dedup:\n  window_h: 240\nretention:\n  text_days: 11\n", encoding="utf-8"
+    )
+    assert load_settings(configs_dir, "prod").retention.text_days == 11
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [("text_days", 0), ("batch_size", 0), ("max_run_s", 0)],
+)
+def test_non_positive_retention_values_rejected(configs_dir: Path, key: str, value: int) -> None:
+    (configs_dir / "prod.yaml").write_text(f"retention:\n  {key}: {value}\n", encoding="utf-8")
+    with pytest.raises(ValidationError, match=key):
+        load_settings(configs_dir, "prod")
+
+
+def test_retention_unknown_key_rejected(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text("retention:\n  surprise: 1\n", encoding="utf-8")
+    with pytest.raises(ValidationError, match="surprise"):
+        load_settings(configs_dir, "prod")
+
+
+def test_simhash_max_distance(configs_dir: Path) -> None:
+    assert load_settings(configs_dir).dedup.simhash_max_distance == 3
+
+
+@pytest.mark.parametrize("value", [4, 10, 64])
+def test_too_large_simhash_distance_rejected(configs_dir: Path, value: int) -> None:
+    """Поиск по частям SimHash корректен только до расстояния 3."""
+    (configs_dir / "prod.yaml").write_text(
+        f"dedup:\n  simhash_max_distance: {value}\n", encoding="utf-8"
+    )
+    with pytest.raises(ValidationError, match="simhash_max_distance"):
+        load_settings(configs_dir, "prod")
+
+
+@pytest.mark.parametrize("value", [0, 1, 3])
+def test_allowed_simhash_distances(configs_dir: Path, value: int) -> None:
+    (configs_dir / "prod.yaml").write_text(
+        f"dedup:\n  simhash_max_distance: {value}\n", encoding="utf-8"
+    )
+    assert load_settings(configs_dir, "prod").dedup.simhash_max_distance == value
+
+
+def test_negative_simhash_distance_rejected(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text("dedup:\n  simhash_max_distance: -1\n", encoding="utf-8")
+    with pytest.raises(ValidationError, match="simhash_max_distance"):
+        load_settings(configs_dir, "prod")
+
+
+def test_ai_max_output_tokens(configs_dir: Path) -> None:
+    assert load_settings(configs_dir).ai.max_output_tokens == 800
+
+
+def test_zero_max_output_tokens_rejected(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text("ai:\n  max_output_tokens: 0\n", encoding="utf-8")
+    with pytest.raises(ValidationError, match="max_output_tokens"):
+        load_settings(configs_dir, "prod")
+
+
+def test_stuck_after_min_and_recover_interval(configs_dir: Path) -> None:
+    settings = load_settings(configs_dir)
+    assert settings.publisher.stuck_after_min == 15
+    assert settings.scheduler.recover_every_min == 10
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_non_positive_stuck_after_min_rejected(configs_dir: Path, value: int) -> None:
+    (configs_dir / "prod.yaml").write_text(
+        f"publisher:\n  stuck_after_min: {value}\n", encoding="utf-8"
+    )
+    with pytest.raises(ValidationError, match="stuck_after_min"):
+        load_settings(configs_dir, "prod")
+
+
+def test_non_positive_recover_interval_rejected(configs_dir: Path) -> None:
+    (configs_dir / "prod.yaml").write_text("scheduler:\n  recover_every_min: 0\n", encoding="utf-8")
+    with pytest.raises(ValidationError, match="recover_every_min"):
         load_settings(configs_dir, "prod")
 
 

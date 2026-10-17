@@ -18,6 +18,7 @@ from aiogram.filters import Command
 from app.bot import texts
 from app.domain.enums import NewsStatus
 from app.pipeline.queue_limit import QUEUE_STATUSES
+from app.runtime_config import RuntimeSource
 
 log = structlog.get_logger(__name__)
 
@@ -54,9 +55,9 @@ class StatusSourceRepo(Protocol):
         raise NotImplementedError
 
 
-class StatusPostRepo(Protocol):
+class StatusCostRepo(Protocol):
     async def cost_since(self, dt: datetime) -> Decimal:
-        """Расход на модель с момента dt."""
+        """Расход на модель с момента dt (AiRequestRepository подходит структурно)."""
         raise NotImplementedError
 
 
@@ -91,7 +92,7 @@ class StatusDeps:
     session_scope: Callable[[], AbstractAsyncContextManager[Any]]
     news_repo: Callable[[Any], StatusNewsRepo]
     source_repo: Callable[[Any], StatusSourceRepo]
-    post_repo: Callable[[Any], StatusPostRepo]
+    cost_repo: Callable[[Any], StatusCostRepo]
     publication_repo: Callable[[Any], StatusPublicationRepo]
     settings_repo: Callable[[Any], StatusSettingsRepo]
     incident_repo: Callable[[Any], StatusIncidentRepo]
@@ -100,6 +101,7 @@ class StatusDeps:
     channel_id: int
     tz: ZoneInfo
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
+    runtime: RuntimeSource | None = None
 
 
 def _money(value: Decimal) -> str:
@@ -113,7 +115,7 @@ async def build_status(deps: StatusDeps) -> str:
     async with deps.session_scope() as session:
         counts = await deps.news_repo(session).count_by_status()
         sources = await deps.source_repo(session).list_enabled()
-        spent = await deps.post_repo(session).cost_since(day_start)
+        spent = await deps.cost_repo(session).cost_since(day_start)
         last = await deps.publication_repo(session).last_published_at(deps.channel_id)
         paused = bool(await deps.settings_repo(session).get(PAUSED_SETTING, False))
         open_errors = await deps.incident_repo(session).count(open_only=True)
@@ -138,9 +140,16 @@ async def build_status(deps: StatusDeps) -> str:
     )
 
 
+async def _limit(deps: StatusDeps) -> int:
+    """Лимит источника в очереди: снимок изменяемых параметров или yaml."""
+    if deps.runtime is None:
+        return deps.max_queued_per_source
+    return (await deps.runtime.snapshot()).publisher.max_queued_per_source
+
+
 async def _full_sources(session: Any, deps: StatusDeps) -> str:
     """Источники, у которых очередь заполнена до лимита, строкой «Имя 4/4»."""
-    limit = deps.max_queued_per_source
+    limit = await _limit(deps)
     if limit <= 0:
         return ""
     counts = await deps.news_repo(session).queue_counts_by_source(QUEUE_STATUSES)

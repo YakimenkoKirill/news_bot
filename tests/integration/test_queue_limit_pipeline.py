@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.base import session_scope
 from app.db.models import NewsItem, ProcessedPost, Source
-from app.db.repositories.news import NewsRepository
+from app.db.repositories.news import NewsRepository, Priority
 from app.db.repositories.sources import SourceRepository
 from app.domain.enums import NewsStatus, SourceType
 from app.pipeline.queue_limit import QUEUE_STATUSES, REASON_QUEUE_LIMIT, QueueAdmission
@@ -17,6 +17,7 @@ pytestmark = pytest.mark.integration
 S = NewsStatus
 NOW = datetime(2026, 10, 16, 12, 0, tzinfo=UTC)
 DECAY = 0.02
+PRIORITY = Priority(DECAY)
 LIMIT = 2
 
 
@@ -30,7 +31,7 @@ class Pipe:
             news_repo=NewsRepository,
             source_repo=SourceRepository,
             max_per_source=limit,
-            decay_per_h=DECAY,
+            priority=PRIORITY,
         )
 
     def scope(self) -> AbstractAsyncContextManager[AsyncSession]:
@@ -94,7 +95,7 @@ class Pipe:
     async def queue(self, source_id: int) -> set[int]:
         async with self.scope() as session:
             queued = await NewsRepository(session).queued_by_source(
-                source_id, QUEUE_STATUSES, DECAY
+                source_id, QUEUE_STATUSES, PRIORITY
             )
         return {item.news_id for item in queued}
 

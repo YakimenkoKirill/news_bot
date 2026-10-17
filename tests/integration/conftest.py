@@ -14,17 +14,31 @@ from sqlalchemy.ext.asyncio import (
 )
 
 import app.db.models  # noqa: F401  регистрирует модели в Base.metadata
-from app.config import get_test_database_url
+from app.config import get_test_database_url, require_test_db
 from app.db.base import Base, create_session_factory
 
 ROOT = Path(__file__).resolve().parents[2]
+NO_DB_MESSAGE = "TEST_DATABASE_URL не задан: поднимите БД (make db-up) и заполните .env"
+STRICT_HINT = (
+    "REQUIRE_TEST_DB=1: интеграционные тесты обязательны. "
+    "Проверьте TEST_DATABASE_URL и доступность БД."
+)
 
 
 @pytest.fixture(scope="session")
-def test_database_url() -> str:
+def strict_db() -> bool:
+    """Включён ли строгий режим: без БД тесты падают, а не пропускаются."""
+    return require_test_db()
+
+
+@pytest.fixture(scope="session")
+def test_database_url(strict_db: bool) -> str:
+    """Адрес тестовой БД; без него skip, а в строгом режиме — ошибка."""
     url = get_test_database_url()
     if url is None:
-        pytest.skip("TEST_DATABASE_URL не задан: поднимите БД (make db-up) и заполните .env")
+        if strict_db:
+            pytest.fail(f"{NO_DB_MESSAGE}. {STRICT_HINT}", pytrace=False)
+        pytest.skip(NO_DB_MESSAGE)
     return url
 
 
@@ -70,3 +84,23 @@ async def session(
 def pipeline_now() -> datetime:
     """Подменённое «сейчас» для стадий пайплайна (совпадает по дате с now() в БД)."""
     return datetime.now(UTC).replace(microsecond=0)
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """В строгом режиме пропущенный интеграционный тест ломает прогон.
+
+    Без этой проверки опечатка в workflow превратила бы все интеграционные
+    тесты в «skipped», а job остался бы зелёным.
+
+    Args:
+        session: Сессия pytest.
+        exitstatus: Код выхода, который pytest собирается вернуть.
+    """
+    if not require_test_db():
+        return
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    skipped = len(reporter.stats.get("skipped", [])) if reporter is not None else 0
+    if not skipped:
+        return
+    print(f"REQUIRE_TEST_DB=1: пропущено тестов — {skipped}, это ошибка")
+    session.exitstatus = pytest.ExitCode.TESTS_FAILED

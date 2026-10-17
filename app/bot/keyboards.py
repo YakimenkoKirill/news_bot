@@ -7,9 +7,10 @@ from enum import StrEnum
 from typing import Protocol
 
 from aiogram.filters.callback_data import CallbackData
-from aiogram.types import InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from app.bot.texts import SETTINGS_LABELS, SETTINGS_LIST_BUTTON, SETTINGS_RESET_BUTTON
 from app.domain.enums import NewsStatus
 
 BUTTONS_PER_SOURCE = 3
@@ -452,4 +453,54 @@ def report_keyboard(current: str) -> InlineKeyboardMarkup:
         mark = QUEUE_ACTIVE_MARK if value == current else ""
         builder.button(text=f"{mark}{label}", callback_data=ReportAction(period=value))
     builder.adjust(len(REPORT_LABELS))
+    return builder.as_markup()
+
+
+class SettingsAction(CallbackData, prefix="st"):
+    """Кнопки /settings: открыть параметр, применить пресет, вернуть значение из конфигурации.
+
+    В callback_data идёт короткий код параметра (texts.SETTINGS_CODES), а не
+    полное имя: 64 байта на всё.
+    """
+
+    action: str
+    key: str = ""
+    value: str = ""
+
+
+ST_EDIT = "edit"
+ST_PRESET = "preset"
+ST_RESET = "reset"
+ST_LIST = "list"
+SETTINGS_PER_ROW = 2
+
+
+def settings_keyboard(codes: Sequence[str]) -> InlineKeyboardMarkup:
+    """Кнопки параметров: подписи из texts.SETTINGS_LABELS."""
+    builder = InlineKeyboardBuilder()
+    for code in codes:
+        builder.button(
+            text=SETTINGS_LABELS[code], callback_data=SettingsAction(action=ST_EDIT, key=code)
+        )
+    builder.adjust(SETTINGS_PER_ROW)
+    return builder.as_markup()
+
+
+def setting_keyboard(code: str, presets: Sequence[tuple[str, str]]) -> InlineKeyboardMarkup:
+    """Пресеты значений, «Как в конфиге» и возврат к списку для одного параметра."""
+    builder = InlineKeyboardBuilder()
+    for value, label in presets:
+        builder.button(
+            text=label, callback_data=SettingsAction(action=ST_PRESET, key=code, value=value)
+        )
+    builder.adjust(len(presets) or 1)
+    builder.row(
+        InlineKeyboardButton(
+            text=SETTINGS_RESET_BUTTON,
+            callback_data=SettingsAction(action=ST_RESET, key=code).pack(),
+        ),
+        InlineKeyboardButton(
+            text=SETTINGS_LIST_BUTTON, callback_data=SettingsAction(action=ST_LIST).pack()
+        ),
+    )
     return builder.as_markup()

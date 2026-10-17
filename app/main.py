@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import signal
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from time import monotonic
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
@@ -22,6 +23,7 @@ from app.bot.handlers import keywords as keywords_handlers
 from app.bot.handlers import moderation as moderation_handlers
 from app.bot.handlers import queue as queue_handlers
 from app.bot.handlers import report as report_handlers
+from app.bot.handlers import settings as settings_handlers
 from app.bot.handlers import source_add as source_add_handlers
 from app.bot.handlers import sources as sources_handlers
 from app.bot.handlers import status as status_handlers
@@ -30,6 +32,7 @@ from app.bot.handlers.errors import MUTED_KINDS_SETTING, ErrorsDeps
 from app.bot.handlers.keywords import KeywordsDeps
 from app.bot.handlers.moderation import ModerationDeps
 from app.bot.handlers.queue import QueueDeps
+from app.bot.handlers.settings import SettingsDeps
 from app.bot.handlers.source_add import SourceAddDeps
 from app.bot.handlers.sources import SourcesDeps
 from app.bot.handlers.status import StatusDeps
@@ -54,15 +57,16 @@ from app.components import (
 from app.config import Settings, get_settings
 from app.db.base import create_engine, create_session_factory, session_scope
 from app.db.models import Incident
+from app.db.repositories.ai_requests import AiRequestRepository
 from app.db.repositories.incidents import IncidentRepository
 from app.db.repositories.misc import AdminRepository, KeywordRepository, SettingsRepository
-from app.db.repositories.news import NewsRepository
+from app.db.repositories.news import NewsRepository, Priority
 from app.db.repositories.posts import ProcessedPostRepository, PublicationRepository
 from app.db.repositories.screens import ScreenRepository
 from app.db.repositories.sources import SourceRepository
 from app.domain.alerts import AlertEvent, AlertKind
 from app.domain.enums import SourceType
-from app.health import HEARTBEAT_SETTING, heartbeat_value
+from app.health import HEARTBEAT_SETTING, evaluate_state, heartbeat_value, read_state
 from app.logging import setup_logging
 from app.pipeline.ai.budget import BudgetGuard
 from app.pipeline.ai.client import DeepSeekClient
@@ -71,18 +75,21 @@ from app.pipeline.queue_limit import QueueAdmission, QueueLimitRepos, trim_queue
 from app.pipeline.retry import RetryDeps
 from app.pipeline.stage_ai import AiStageDeps, process_normalized_batch
 from app.pipeline.stage_normalize import NormalizeDeps, process_new_batch
-from app.publisher.media import ImageCheck, check_image
+from app.publisher.media import ImageCheck, PhotoSource, TelegramPhotoFetcher, check_image
 from app.publisher.publisher import Publisher
 from app.publisher.stage_publish import (
     PAUSED_SETTING,
     ManualPublishDeps,
     PublishDeps,
     publish_due,
+    recover_stuck,
 )
 from app.reports.daily import DailyContext
 from app.reports.sender import DailyReportSender
 from app.reports.service import ReportDeps
+from app.runtime_config import QUEUE_LIMIT_KEY, RuntimeConfig
 from app.scheduler import SchedulerDeps, build_scheduler
+from app.stats import StatsDeps, collect_post_stats
 
 log = structlog.get_logger(__name__)
 
@@ -181,6 +188,16 @@ def build_components(settings: Settings) -> list[Component]:
     def scope() -> AbstractAsyncContextManager[AsyncSession]:
         return session_scope(factory)
 
+    trim_on_change: list[Callable[[], Awaitable[int]]] = []
+
+    async def on_runtime_change(key: str) -> None:
+        """После изменения лимита источника лишние посты вытесняются сразу."""
+        if key != QUEUE_LIMIT_KEY:
+            return
+        for trim in trim_on_change:
+            await trim()
+
+    runtime = RuntimeConfig(scope, SettingsRepository, settings, on_change=on_runtime_change)
     http = HttpClient(settings.collectors)
     robots = RobotsChecker(
         http, settings.collectors.user_agent, timedelta(hours=settings.collectors.robots_ttl_h)
@@ -237,13 +254,25 @@ def build_components(settings: Settings) -> list[Component]:
             source_repo=SourceRepository,
             news_repo=NewsRepository,
             health=health,
+            settings_repo=SettingsRepository,
         ),
         settings.telegram,
+        settings.filters.max_age_h,
     )
     deepseek = DeepSeekClient(settings, settings.ai)
 
     async def image_check(url: str | None) -> ImageCheck:
         return await check_image(url, http, settings.publisher)
+
+    async def source_of(source_id: int) -> PhotoSource | None:
+        async with scope() as session:
+            return await SourceRepository(session).get(source_id)
+
+    photo_fetcher = TelegramPhotoFetcher(
+        download=telegram.download_photo,
+        source=source_of,
+        max_bytes=settings.publisher.image_max_bytes,
+    )
 
     notifier = BotReviewNotifier(
         bot,
@@ -255,12 +284,15 @@ def build_components(settings: Settings) -> list[Component]:
             admin_ids=admins.ids,
             check_image=image_check,
             cfg=settings.publisher,
+            photo_fetcher=photo_fetcher,
         ),
     )
     budget = BudgetGuard(_SessionCost(scope), alerts, settings.ai, tz)
 
     def processor(repos: AiRepos) -> AiProcessor:
-        return AiProcessor(deepseek, settings.channel, repos, settings.ai)
+        return AiProcessor(
+            deepseek, settings.channel, repos, settings.ai, budget=budget, runtime=runtime
+        )
 
     collection_deps = CollectionDeps(
         session_scope=scope,
@@ -284,13 +316,15 @@ def build_components(settings: Settings) -> list[Component]:
         news_repo=NewsRepository,
         source_repo=SourceRepository,
         max_per_source=settings.publisher.max_queued_per_source,
-        decay_per_h=settings.publisher.score_decay_per_h,
+        priority=Priority.from_config(settings.publisher),
+        runtime=runtime,
     )
     ai_deps = AiStageDeps(
         session_scope=scope,
         news_repo=NewsRepository,
         source_repo=SourceRepository,
         post_repo=ProcessedPostRepository,
+        request_repo=AiRequestRepository,
         settings_repo=SettingsRepository,
         processor=processor,
         budget=budget,
@@ -313,14 +347,25 @@ def build_components(settings: Settings) -> list[Component]:
         cfg=settings.publisher,
         channel_id=settings.telegram_channel_id,
         tz=tz,
+        photo_fetcher=photo_fetcher,
+        runtime=runtime,
     )
     manual_deps = ManualPublishDeps(publish=publish_deps, news_repo=NewsRepository)
+    stats_deps = StatsDeps(
+        session_scope=scope,
+        publication_repo=PublicationRepository,
+        fetcher=telegram,
+        sink=alerts,
+        cfg=settings.stats,
+        channel_id=settings.telegram_channel_id,
+    )
     preview_deps = PreviewDeps(
         session_scope=scope,
         news_repo=NewsRepository,
         source_repo=SourceRepository,
         check_image=image_check,
         cfg=settings.publisher,
+        photo_fetcher=photo_fetcher,
     )
 
     async def is_paused(session: AsyncSession) -> bool:
@@ -359,6 +404,57 @@ def build_components(settings: Settings) -> list[Component]:
                 now - timedelta(days=settings.alerts.retention_days)
             )
 
+    async def retention(now: datetime) -> int:
+        """Очищает тексты старых новостей пачками, не дольше retention.max_run_s.
+
+        Каждая пачка — своя короткая транзакция. Если новостей больше, чем
+        успевает один запуск, остальные очистит следующий.
+
+        Args:
+            now: Текущий момент.
+
+        Returns:
+            Сколько новостей очищено за этот запуск.
+        """
+        cfg = settings.retention
+        before = now - timedelta(days=cfg.text_days)
+        deadline = monotonic() + cfg.max_run_s
+        stripped = 0
+        while True:
+            async with scope() as session:
+                batch = await NewsRepository(session).strip_texts(before, cfg.batch_size)
+            stripped += batch
+            if batch < cfg.batch_size or monotonic() >= deadline:
+                break
+        log.info("retention.stripped", count=stripped, before=before.isoformat())
+        return stripped
+
+    async def health_watch(now: datetime) -> dict[str, list[str]]:
+        """Проверяет компоненты и алертит о проблемах Telethon и модели.
+
+        Args:
+            now: Текущий момент.
+
+        Returns:
+            Причины по компонентам (пустые списки — всё в порядке).
+        """
+        async with scope() as session:
+            state = await read_state(session, settings, now)
+        problems = evaluate_state(state, now, settings.health)
+        for kind, component in ((AlertKind.TG_DOWN, "telegram"), (AlertKind.AI_STALLED, "ai")):
+            reasons = problems[component]
+            if not reasons:
+                continue
+            await alerts.emit(
+                AlertEvent(
+                    kind=kind,
+                    key=kind.value,
+                    message="; ".join(reasons),
+                    created_at=now,
+                )
+            )
+        return problems
+
     async def heartbeat(now: datetime) -> None:
         async with scope() as session:
             await SettingsRepository(session).set(
@@ -376,9 +472,15 @@ def build_components(settings: Settings) -> list[Component]:
             heartbeat=heartbeat,
             purge_incidents=purge_incidents,
             daily_report=report_sender.send_due,
+            recover_stuck=lambda now: recover_stuck(now, publish_deps),
+            retention=retention,
+            post_stats=lambda now: collect_post_stats(now, stats_deps),
+            tg_beat=telegram.mark_alive,
+            health=health_watch,
             sink=alerts,
         ),
         settings.scheduler,
+        tg_beat_s=settings.health.tg_beat_s,
     )
 
     dispatcher = create_dispatcher(
@@ -395,13 +497,14 @@ def build_components(settings: Settings) -> list[Component]:
                 queue_handlers.create_router(),
                 errors_handlers.create_router(),
                 report_handlers.create_router(),
+                settings_handlers.create_router(),
             ],
             workflow_data={
                 "status_deps": StatusDeps(
                     session_scope=scope,
                     news_repo=NewsRepository,
                     source_repo=SourceRepository,
-                    post_repo=ProcessedPostRepository,
+                    cost_repo=AiRequestRepository,
                     publication_repo=PublicationRepository,
                     settings_repo=SettingsRepository,
                     incident_repo=IncidentRepository,
@@ -409,6 +512,7 @@ def build_components(settings: Settings) -> list[Component]:
                     daily_budget=settings.ai.daily_budget,
                     channel_id=settings.telegram_channel_id,
                     tz=tz,
+                    runtime=runtime,
                 ),
                 "sources_deps": SourcesDeps(
                     session_scope=scope,
@@ -454,6 +558,7 @@ def build_components(settings: Settings) -> list[Component]:
                     max_per_source=settings.publisher.max_queued_per_source,
                     clock=lambda: datetime.now(UTC),
                     manual=manual_deps,
+                    runtime=runtime,
                 ),
                 "errors_deps": ErrorsDeps(
                     session_scope=scope,
@@ -475,17 +580,17 @@ def build_components(settings: Settings) -> list[Component]:
                     clock=lambda: datetime.now(UTC),
                 ),
                 "report_deps": report_deps,
+                "settings_deps": SettingsDeps(runtime=runtime, cache_s=settings.runtime.cache_s),
             },
         )
     )
+    queue_trim = QueueTrimComponent(scope, admission)
+    trim_on_change.append(queue_trim.trim)
     return [
         DatabaseComponent(engine),
         StartMarkerComponent(scope, started_at),
-        QueueTrimComponent(
-            scope,
-            settings.publisher.max_queued_per_source,
-            settings.publisher.score_decay_per_h,
-        ),
+        queue_trim,
+        RecoverStuckComponent(publish_deps, lambda: datetime.now(UTC)),
         http,
         ClosingComponent("ai_client", deepseek.close),
         BotPollingComponent(bot, dispatcher, setup_bot_commands),
@@ -498,7 +603,9 @@ class QueueTrimComponent:
     """Приводит очередь к лимиту источника при старте.
 
     Нужен, когда лимит включили или уменьшили, пока приложение не работало.
-    Ошибка пробрасывается: стартовать с неизвестным состоянием очереди нельзя.
+    Лимит берётся там же, где его берёт постановка в очередь, поэтому правка
+    через /settings учитывается. Ошибка пробрасывается: стартовать с неизвестным
+    состоянием очереди нельзя.
     """
 
     name = "queue_trim"
@@ -506,23 +613,50 @@ class QueueTrimComponent:
     def __init__(
         self,
         scope: Callable[[], AbstractAsyncContextManager[AsyncSession]],
-        max_per_source: int,
-        decay_per_h: float,
+        admission: QueueAdmission,
     ) -> None:
         self._scope = scope
-        self._max_per_source = max_per_source
-        self._decay_per_h = decay_per_h
+        self._admission = admission
 
     async def start(self) -> None:
         """Вытесняет лишние посты каждого источника одной транзакцией."""
         try:
-            async with self._scope() as session:
-                repos = QueueLimitRepos(
-                    news=NewsRepository(session), sources=SourceRepository(session)
-                )
-                await trim_queue(repos, self._max_per_source, self._decay_per_h)
+            await self.trim()
         except Exception:
             log.exception("queue_limit.trim_failed")
+            raise
+
+    async def trim(self) -> int:
+        """Вытесняет лишние посты и возвращает их число."""
+        max_per_source, priority = await self._admission.limits()
+        async with self._scope() as session:
+            repos = QueueLimitRepos(news=NewsRepository(session), sources=SourceRepository(session))
+            return await trim_queue(repos, max_per_source, priority)
+
+    async def stop(self) -> None:
+        """Ничего не делает."""
+
+
+class RecoverStuckComponent:
+    """Разбирает зависшие отправки при старте.
+
+    Нужен, когда приложение упало между отправкой поста в канал и записью итога:
+    такой пост остаётся в scheduled и сам из него не выйдет. Ошибка пробрасывается:
+    стартовать, не разобравшись с возможным дублем в канале, нельзя.
+    """
+
+    name = "recover_stuck"
+
+    def __init__(self, deps: PublishDeps, clock: Callable[[], datetime]) -> None:
+        self._deps = deps
+        self._clock = clock
+
+    async def start(self) -> None:
+        """Переводит зависшие посты в published или failed с publish_unknown."""
+        try:
+            await recover_stuck(self._clock(), self._deps)
+        except Exception:
+            log.exception("publish.recover_failed")
             raise
 
     async def stop(self) -> None:
@@ -580,7 +714,7 @@ class _SessionCost:
 
     async def cost_since(self, dt: datetime) -> Decimal:
         async with self._scope() as session:
-            return await ProcessedPostRepository(session).cost_since(dt)
+            return await AiRequestRepository(session).cost_since(dt)
 
 
 class _SessionIncidentStore:

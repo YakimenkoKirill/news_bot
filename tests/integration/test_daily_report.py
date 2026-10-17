@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.base import session_scope
-from app.db.models import Incident, NewsItem, ProcessedPost, Publication, Source
+from app.db.models import AiRequest, Incident, NewsItem, ProcessedPost, Publication, Source
 from app.domain.alerts import AlertKind
 from app.domain.enums import NewsStatus, PublicationStatus, SourceType
 from app.reports.daily import DailyContext, collect_daily, post_url
@@ -69,6 +69,7 @@ class Fixture:
         post_created_at: datetime | None = None,
         edited_by: int | None = None,
         tokens: tuple[int, int] = (100, 50),
+        cached_tokens: int = 0,
         title: str = "Заголовок",
     ) -> tuple[int, int | None]:
         """Создаёт новость и, если задан score, пересказ. Возвращает (news_id, post_id)."""
@@ -105,7 +106,47 @@ class Fixture:
                 session.add(post)
                 await session.flush()
                 post_id = post.id
+                session.add(
+                    AiRequest(
+                        news_item_id=item.id,
+                        kind="summary",
+                        model="test-model",
+                        prompt_tokens=tokens[0],
+                        cached_tokens=cached_tokens,
+                        completion_tokens=tokens[1],
+                        cost=Decimal(cost),
+                        ok=True,
+                        created_at=post_created_at or created_at,
+                    )
+                )
             return item.id, post_id
+
+    async def ai_request(
+        self,
+        news_id: int | None,
+        *,
+        created_at: datetime,
+        cost: str = "0.001",
+        ok: bool = True,
+        tokens: tuple[int, int] = (100, 50),
+        cached_tokens: int = 0,
+        kind: str = "summary",
+    ) -> None:
+        """Добавляет запрос к модели без пересказа (например, неудачную попытку)."""
+        async with self.scope() as session:
+            session.add(
+                AiRequest(
+                    news_item_id=news_id,
+                    kind=kind,
+                    model="test-model",
+                    prompt_tokens=tokens[0],
+                    cached_tokens=cached_tokens,
+                    completion_tokens=tokens[1],
+                    cost=Decimal(cost),
+                    ok=ok,
+                    created_at=created_at,
+                )
+            )
 
     async def publish(
         self,
@@ -115,6 +156,10 @@ class Fixture:
         status: PublicationStatus = PublicationStatus.SENT,
         initiated_by: int | None = None,
         message_id: int | None = None,
+        views: int | None = None,
+        forwards: int | None = None,
+        reactions: int | None = None,
+        stats_at: datetime | None = None,
     ) -> None:
         async with self.scope() as session:
             session.add(
@@ -126,6 +171,10 @@ class Fixture:
                     published_at=at,
                     initiated_by=initiated_by,
                     error=None if status is PublicationStatus.SENT else "Telegram отклонил",
+                    views=views,
+                    forwards=forwards,
+                    reactions=reactions,
+                    stats_at=stats_at if stats_at is not None or views is None else at,
                 )
             )
 
@@ -305,6 +354,127 @@ async def test_spending_and_quality(
     assert quality.delay_median_min == pytest.approx(120.0)
     assert quality.avg_published_score == pytest.approx(0.7)
     assert quality.duplicate_share == 0.0
+
+
+async def test_failed_requests_counted_in_spending(
+    session_factory: async_sessionmaker[AsyncSession], session: AsyncSession
+) -> None:
+    """Две неудачные попытки без пересказа всё равно видны в расходе."""
+    fixture = Fixture(session_factory)
+    source_id = await fixture.source("A")
+    news_id, post_id = await fixture.news(
+        source_id, created_at=msk(9), published_at=msk(8), score=0.9, cost="0.002"
+    )
+    assert post_id
+    await fixture.publish(post_id, msk(10), message_id=1)
+    failed_id, _ = await fixture.news(
+        source_id, status=S.FAILED, created_at=msk(11), reason="bad_ai_response"
+    )
+    await fixture.ai_request(failed_id, created_at=msk(11), cost="0.004", ok=False)
+    await fixture.ai_request(failed_id, created_at=msk(11), cost="0.003", ok=False)
+
+    spending = (await fixture.report(session)).spending
+    assert spending.cost == Decimal("0.009")
+    assert (spending.requests, spending.failed) == (3, 2)
+    assert spending.month_to_date == Decimal("0.009")
+    assert news_id != failed_id
+
+
+async def test_spending_split_by_kind(
+    session_factory: async_sessionmaker[AsyncSession], session: AsyncSession
+) -> None:
+    """Отбор и пересказ видны в отчёте отдельно."""
+    fixture = Fixture(session_factory)
+    source_id = await fixture.source("A")
+    news_id, _ = await fixture.news(
+        source_id, created_at=msk(9), published_at=msk(8), score=0.9, cost="0.002"
+    )
+    await fixture.ai_request(news_id, created_at=msk(9), cost="0.0004", kind="screen")
+    screened_out, _ = await fixture.news(
+        source_id, status=S.FILTERED, created_at=msk(10), reason="not_relevant"
+    )
+    await fixture.ai_request(screened_out, created_at=msk(10), cost="0.0004", kind="screen")
+
+    spending = (await fixture.report(session)).spending
+    assert {item.kind: (item.requests, item.cost) for item in spending.by_kind} == {
+        "screen": (2, Decimal("0.0008")),
+        "summary": (1, Decimal("0.002")),
+    }
+    assert spending.cost == Decimal("0.0028")
+
+
+async def test_cached_tokens_share_in_spending(
+    session_factory: async_sessionmaker[AsyncSession], session: AsyncSession
+) -> None:
+    fixture = Fixture(session_factory)
+    source_id = await fixture.source("A")
+    await fixture.news(
+        source_id,
+        created_at=msk(9),
+        published_at=msk(8),
+        score=0.9,
+        tokens=(1000, 100),
+        cached_tokens=750,
+    )
+
+    spending = (await fixture.report(session)).spending
+    assert (spending.prompt_tokens, spending.cached_tokens) == (1000, 750)
+    assert spending.cached_share == pytest.approx(0.75)
+    assert spending.failed == 0
+
+
+async def test_requests_of_deleted_news_remain(
+    session_factory: async_sessionmaker[AsyncSession], session: AsyncSession
+) -> None:
+    """Новость удалена — строка расхода остаётся с news_item_id = NULL."""
+    fixture = Fixture(session_factory)
+    await fixture.ai_request(None, created_at=msk(9), cost="0.007", ok=False)
+
+    spending = (await fixture.report(session)).spending
+    assert spending.cost == Decimal("0.007")
+    assert (spending.requests, spending.failed) == (1, 1)
+
+
+async def test_readers_block_counts_collected_stats(
+    session_factory: async_sessionmaker[AsyncSession], session: AsyncSession
+) -> None:
+    """Блок «Читатели» считает только посты с собранной статистикой."""
+    fixture = Fixture(session_factory)
+    first = await fixture.source("Bell")
+    second = await fixture.source("Экономист")
+    _, best = await fixture.news(first, created_at=msk(9), published_at=msk(8), score=0.9)
+    _, good = await fixture.news(first, created_at=msk(9), published_at=msk(8), score=0.8)
+    _, other = await fixture.news(second, created_at=msk(9), published_at=msk(8), score=0.7)
+    _, fresh = await fixture.news(first, created_at=msk(9), published_at=msk(8), score=0.6)
+    assert best and good and other and fresh
+    await fixture.publish(best, msk(10), message_id=10, views=5200, forwards=40, reactions=12)
+    await fixture.publish(good, msk(11), message_id=11, views=3800, forwards=10, reactions=5)
+    await fixture.publish(other, msk(12), message_id=12, views=1000, forwards=1, reactions=0)
+    await fixture.publish(fresh, msk(13), message_id=13)
+
+    readers = (await fixture.report(session)).readers
+
+    assert readers.posts == 3
+    assert readers.views == 10000
+    assert (readers.forwards, readers.reactions) == (51, 17)
+    assert readers.views_per_post == 3333
+    assert [post.views for post in readers.top] == [5200, 3800, 1000]
+    assert readers.top[0].url is not None and readers.top[0].url.endswith("/10")
+    assert readers.by_source == (("Bell", 4500), ("Экономист", 1000))
+
+
+async def test_readers_block_empty_without_stats(
+    session_factory: async_sessionmaker[AsyncSession], session: AsyncSession
+) -> None:
+    fixture = Fixture(session_factory)
+    source_id = await fixture.source("A")
+    _, post_id = await fixture.news(source_id, created_at=msk(9), published_at=msk(8), score=0.9)
+    assert post_id
+    await fixture.publish(post_id, msk(10), message_id=1)
+
+    readers = (await fixture.report(session)).readers
+    assert readers == type(readers)()
+    assert readers.views_per_post is None
 
 
 async def test_queue_state_and_errors(

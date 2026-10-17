@@ -465,6 +465,16 @@ async def test_open_news_card() -> None:
     assert [label for label, _ in _buttons(sent.reply_markup)] == ["🔁 Повторить", "◀️ К списку"]
 
 
+async def test_news_card_explains_unknown_publication() -> None:
+    """Зависшая отправка: админ должен проверить канал перед «Повторить»."""
+    db = Db()
+    news = db.failed_news(reason="publish_unknown", with_post=True)
+    session = await _feed(db, _cb(ErrorActionType.OPEN, tab=ErrorTab.NEWS, item_id=news.id))
+    [sent] = session.sent()
+    assert "Причина: неизвестно, вышел ли пост: проверьте канал" in sent.text
+    assert texts.RETRY_HINT_TO_QUEUE in sent.text
+
+
 @pytest.mark.parametrize(
     ("with_post", "expected"),
     [(False, "to_ai"), (True, "to_queue")],

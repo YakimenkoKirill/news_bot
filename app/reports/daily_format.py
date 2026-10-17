@@ -7,8 +7,9 @@ from collections.abc import Sequence
 from decimal import ROUND_HALF_UP, Decimal
 
 from app.config import DailyReportConfig, MetricsConfig
+from app.pipeline.ai.processor import KIND_SCREEN, KIND_SUMMARY
 from app.publisher.limits import utf16_len
-from app.reports.daily import DailyReport, SourceStats
+from app.reports.daily import DailyReport, KindSpending, SourceStats
 from app.reports.metrics import MetricCheck, RunReport, compare_with_targets
 
 PARAGRAPH = "\n\n"
@@ -18,9 +19,11 @@ PRE_OPEN = "<pre>"
 PRE_CLOSE = "</pre>"
 POST_FORMS = ("пост", "поста", "постов")
 NEWS_FORMS = ("новость", "новости", "новостей")
+REQUEST_FORMS = ("запрос", "запроса", "запросов")
 TABLE_HEADER = "источник          собр  канал  дубл  отсев  оценка"
 PERCENT = 100
 TEENS = range(11, 15)
+KIND_LABELS = {KIND_SCREEN: "отбор", KIND_SUMMARY: "пересказ"}
 LAST_DIGIT_ONE = 1
 LAST_DIGIT_FEW = range(2, 5)
 
@@ -184,10 +187,39 @@ def _spending_block(report: DailyReport, cfg: DailyReportConfig, budget: Decimal
         f"Запросов: {spending.requests} · токены "
         f"{_thousands(spending.prompt_tokens)} / {_thousands(spending.completion_tokens)}",
     ]
+    stages = _stages_line(spending.by_kind)
+    if stages is not None:
+        lines.append(stages)
+    cached_share = spending.cached_share
+    if cached_share is not None:
+        lines.append(f"Из кэша {cached_share * PERCENT:.0f}% входных токенов")
+    if spending.failed:
+        lines.append(f"Неудачных запросов: {spending.failed}")
     if spending.cost_per_post is not None:
         lines.append(f"Стоимость поста: {_money(spending.cost_per_post)}")
     lines.append(f"С начала месяца: {_money(spending.month_to_date)}")
     return "\n".join(lines)
+
+
+def _stages_line(by_kind: Sequence[KindSpending]) -> str | None:
+    """Строка «отбор: N запросов, $X; пересказ: M, $Y» или None без отбора.
+
+    Вид запроса, которого в отчёте нет, в строку не попадает; незнакомый вид
+    выводится как есть — отчёт не должен молча терять расход.
+    """
+    known = {item.kind: item for item in by_kind}
+    if KIND_SCREEN not in known:
+        return None
+    parts = []
+    for index, item in enumerate(by_kind):
+        label = KIND_LABELS.get(item.kind, item.kind)
+        requests = (
+            f"{item.requests} {plural(item.requests, REQUEST_FORMS)}"
+            if index == 0
+            else str(item.requests)
+        )
+        parts.append(f"{label}: {requests}, {_money(item.cost)}")
+    return "; ".join(parts)
 
 
 def _check_mark(check: MetricCheck) -> str:
@@ -233,6 +265,34 @@ def _queue_block(report: DailyReport) -> str | None:
         best = f" (лучший: {_score(queue.best_score)} «{_escape(queue.best_title)}»)"
     lines.append(f"В очереди: {queue.in_queue}{best}")
     lines.append(f"На модерации: {queue.pending_review}")
+    return "\n".join(lines)
+
+
+def _readers_block(report: DailyReport) -> str | None:
+    """Блок «Читатели» или None, если статистики постов ещё нет."""
+    readers = report.readers
+    per_post = readers.views_per_post
+    if not readers.posts or per_post is None:
+        return None
+    lines = [
+        "<b>Читатели</b>",
+        f"Просмотров: {_thousands(readers.views)} · на пост {_thousands(per_post)}"
+        f" · постов со статистикой: {readers.posts}",
+    ]
+    if readers.forwards or readers.reactions:
+        lines.append(
+            f"Пересылок: {_thousands(readers.forwards)} · реакций: {_thousands(readers.reactions)}"
+        )
+    if readers.top:
+        lines.append("Больше всего читали:")
+        for post in readers.top:
+            label = f"{_thousands(post.views)} {_escape(post.title)}"
+            lines.append(f'• <a href="{post.url}">{label}</a>' if post.url else f"• {label}")
+    if readers.by_source:
+        details = ", ".join(
+            f"{_escape(name)} {_thousands(views)}" for name, views in readers.by_source
+        )
+        lines.append(f"Просмотры на пост: {details}")
     return "\n".join(lines)
 
 
@@ -338,6 +398,7 @@ def format_daily(
         _funnel_block(report),
         _spending_block(report, cfg, budget),
         _quality_block(report, metrics),
+        _readers_block(report),
         _queue_block(report),
         _errors_block(report),
     ]

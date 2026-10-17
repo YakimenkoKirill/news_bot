@@ -86,7 +86,7 @@ def _deps(db: Db) -> StatusDeps:
         session_scope=scope,
         news_repo=Repo,
         source_repo=Repo,
-        post_repo=Repo,
+        cost_repo=Repo,
         publication_repo=Repo,
         settings_repo=Repo,
         incident_repo=Repo,
@@ -185,17 +185,18 @@ def test_commands_listed_in_help() -> None:
 def test_real_repositories_fit_protocols() -> None:
     from unittest.mock import MagicMock
 
+    from app.db.repositories.ai_requests import AiRequestRepository
     from app.db.repositories.incidents import IncidentRepository
     from app.db.repositories.misc import SettingsRepository
     from app.db.repositories.news import NewsRepository
-    from app.db.repositories.posts import ProcessedPostRepository, PublicationRepository
+    from app.db.repositories.posts import PublicationRepository
     from app.db.repositories.sources import SourceRepository
 
     deps = StatusDeps(
         session_scope=MagicMock(),
         news_repo=NewsRepository,
         source_repo=SourceRepository,
-        post_repo=ProcessedPostRepository,
+        cost_repo=AiRequestRepository,
         publication_repo=PublicationRepository,
         settings_repo=SettingsRepository,
         incident_repo=IncidentRepository,

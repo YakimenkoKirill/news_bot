@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import structlog
 from aiogram.enums import ParseMode
 from aiogram.exceptions import (
     TelegramBadRequest,
@@ -9,8 +10,10 @@ from aiogram.exceptions import (
     TelegramRetryAfter,
 )
 from aiogram.methods import SendMessage
+from aiogram.types import BufferedInputFile
 
 from app.config import PublisherConfig
+from app.logging import setup_logging
 from app.publisher.limits import FittedPost
 from app.publisher.publisher import Publisher, PublishError
 from tests.config_helpers import base_section
@@ -19,6 +22,7 @@ CFG = PublisherConfig(**base_section("publisher"))
 CHANNEL = -1001234567890
 POST_HTML = '<b>Заголовок</b>\n\nТекст\n\n<a href="https://src.example/1">Источник: S</a>'
 IMG = "https://cdn.example/1.jpg"
+PHOTO_BYTES = b"\xff\xd8photo"
 LINK = "https://src.example/1"
 METHOD = SendMessage(chat_id=CHANNEL, text="x")
 
@@ -78,6 +82,39 @@ async def test_photo_post() -> None:
         "parse_mode": ParseMode.HTML,
     }
     assert bot.text_calls == []
+
+
+async def test_photo_bytes_sent_as_file() -> None:
+    """Фото из Telegram-источника уходит файлом: публичного URL у него нет."""
+    bot = FakeBot()
+    message_id = await _publisher(bot).send(FittedPost(POST_HTML, use_photo=True), PHOTO_BYTES)
+    assert message_id == 101
+    [call] = bot.photo_calls
+    assert isinstance(call["photo"], BufferedInputFile)
+    assert call["photo"].data == PHOTO_BYTES
+    assert call["photo"].filename == "photo.jpg"
+    assert call["caption"] == POST_HTML
+    assert bot.text_calls == []
+
+
+async def test_rejected_photo_bytes_fall_back_to_text() -> None:
+    bot = FakeBot(photo=[_bad_request()])
+    assert await _publisher(bot).send(FittedPost(POST_HTML, use_photo=True), PHOTO_BYTES) == 202
+    assert len(bot.photo_calls) == 1
+    assert bot.text_calls
+
+
+async def test_bytes_are_not_logged(capsys: pytest.CaptureFixture[str]) -> None:
+    """В логах — только размер файла, а не сами байты."""
+    setup_logging("INFO", json_output=True)
+    try:
+        bot = FakeBot(photo=[_bad_request()])
+        await _publisher(bot).send(FittedPost(POST_HTML, use_photo=True), PHOTO_BYTES)
+    finally:
+        structlog.reset_defaults()
+    out = capsys.readouterr().out
+    assert "publisher.photo_rejected" in out
+    assert f"{len(PHOTO_BYTES)} байт" in out
 
 
 async def test_text_post_with_preview() -> None:

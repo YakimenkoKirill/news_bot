@@ -32,6 +32,28 @@ RETRYABLE_ERRORS = (
     openai.InternalServerError,
 )
 JSON_RESPONSE_FORMAT = {"type": "json_object"}
+TRUNCATED_FINISH_REASON = "length"
+
+
+def _cached_tokens(usage: Any) -> int:
+    """Входные токены, попавшие в кэш провайдера.
+
+    DeepSeek присылает prompt_cache_hit_tokens, OpenAI-совместимые провайдеры —
+    prompt_tokens_details.cached_tokens; если нет ни того, ни другого — 0.
+
+    Args:
+        usage: Поле usage ответа модели или None.
+
+    Returns:
+        Число кэшированных входных токенов.
+    """
+    if usage is None:
+        return 0
+    hit = getattr(usage, "prompt_cache_hit_tokens", None)
+    if hit is None:
+        details = getattr(usage, "prompt_tokens_details", None)
+        hit = getattr(details, "cached_tokens", None) if details is not None else None
+    return int(hit or 0)
 
 
 class AiError(Exception):
@@ -52,11 +74,19 @@ class AiResponseError(AiError):
 
 @dataclass(frozen=True)
 class AiRawResponse:
-    """Текст ответа модели и расход токенов."""
+    """Текст ответа модели и расход токенов.
+
+    Attributes:
+        content: Текст ответа.
+        prompt_tokens: Все входные токены, включая попавшие в кэш.
+        completion_tokens: Выходные токены.
+        cached_tokens: Входные токены, оплаченные по цене кэша.
+    """
 
     content: str
     prompt_tokens: int
     completion_tokens: int
+    cached_tokens: int = 0
 
 
 class DeepSeekClient:
@@ -89,11 +119,14 @@ class DeepSeekClient:
         """Закрывает HTTP-клиент openai."""
         await self._client.close()
 
-    async def chat_json(self, messages: Sequence[Message]) -> AiRawResponse:
+    async def chat_json(
+        self, messages: Sequence[Message], *, max_tokens: int | None = None
+    ) -> AiRawResponse:
         """Отправляет диалог и просит ответ в формате JSON-объекта.
 
         Args:
             messages: Сообщения в формате OpenAI (role, content).
+            max_tokens: Предел длины ответа; по умолчанию ai.max_output_tokens.
 
         Returns:
             Текст ответа и число токенов запроса и ответа.
@@ -101,8 +134,9 @@ class DeepSeekClient:
         Raises:
             AiFatalError: Ключ неверен, запрос отклонён (400, 401, 403, 404 и т. п.).
             AiUnavailableError: Повторы на лимитах, сетевых ошибках и 5xx исчерпаны.
-            AiResponseError: Ответ пустой.
+            AiResponseError: Ответ пустой или обрезан по max_tokens.
         """
+        limit = self._cfg.max_output_tokens if max_tokens is None else max_tokens
         retrying = AsyncRetrying(
             stop=stop_after_attempt(self._cfg.max_retries + 1),
             wait=self._wait,
@@ -112,7 +146,7 @@ class DeepSeekClient:
         try:
             async for attempt in retrying:
                 with attempt:
-                    response = await self._request(messages)
+                    response = await self._request(messages, limit)
         except RetryError as exc:
             last = exc.last_attempt.exception()
             raise AiUnavailableError(f"API модели недоступен: {last!r}") from last
@@ -122,7 +156,7 @@ class DeepSeekClient:
             ) from exc
         return self._parse(response)
 
-    async def _request(self, messages: Sequence[Message]) -> Any:
+    async def _request(self, messages: Sequence[Message], max_tokens: int) -> Any:
         async with self._semaphore:
             return await self._client.chat.completions.create(
                 model=self._cfg.model,
@@ -130,21 +164,45 @@ class DeepSeekClient:
                 temperature=self._cfg.temperature,
                 response_format=JSON_RESPONSE_FORMAT,
                 timeout=self._cfg.timeout_s,
+                max_tokens=max_tokens,
             )
 
     def _parse(self, response: Any) -> AiRawResponse:
+        """Достаёт текст и расход токенов из ответа модели.
+
+        Args:
+            response: Ответ chat.completions.create.
+
+        Returns:
+            Текст ответа и число токенов (нули, если провайдер не прислал usage).
+
+        Raises:
+            AiResponseError: Ответ пустой или обрезан по max_tokens.
+        """
         choices = getattr(response, "choices", None) or []
         content = choices[0].message.content if choices else None
+        usage = getattr(response, "usage", None)
+        prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0) if usage is not None else 0
+        completion_tokens = (
+            int(getattr(usage, "completion_tokens", 0) or 0) if usage is not None else 0
+        )
+        cached_tokens = min(_cached_tokens(usage), prompt_tokens)
+        if choices and getattr(choices[0], "finish_reason", None) == TRUNCATED_FINISH_REASON:
+            log.warning(
+                "ai.truncated",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            )
+            raise AiResponseError("ответ модели обрезан по max_tokens")
         if not content or not str(content).strip():
             raise AiResponseError("модель вернула пустой ответ")
-        usage = getattr(response, "usage", None)
         if usage is None:
             log.warning("ai.usage_missing", model=self._cfg.model)
-            return AiRawResponse(content=str(content), prompt_tokens=0, completion_tokens=0)
         return AiRawResponse(
             content=str(content),
-            prompt_tokens=int(usage.prompt_tokens or 0),
-            completion_tokens=int(usage.completion_tokens or 0),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cached_tokens=cached_tokens,
         )
 
     def _wait(self, state: RetryCallState) -> float:

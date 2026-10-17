@@ -1,6 +1,6 @@
 import pytest
 
-from app.pipeline.ai.factcheck import normalize_number, unsupported_facts
+from app.pipeline.ai.factcheck import FOREIGN_NOTE, is_foreign, normalize_number, unsupported_facts
 
 SOURCE_RU = (
     "Министр финансов Антон Силуанов заявил, что бюджет России в 2026 году получит "
@@ -89,3 +89,67 @@ def test_duplicates_reported_once() -> None:
         "5",
         "Иванов",
     ]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("1,000", "1000"),
+        ("1 000", "1000"),
+        ("1000", "1000"),
+        ("1,5", "1.5"),
+        ("1.50", "1.5"),
+        ("1,000.5", "1000.5"),
+        ("12,345,678", "12345678"),
+        ("5%", "5"),
+    ],
+)
+def test_normalize_number_formats(raw: str, expected: str) -> None:
+    assert normalize_number(raw) == expected
+
+
+def test_english_thousands_confirmed_by_russian_source() -> None:
+    """«1,000» в пересказе подтверждается «1 000» в источнике."""
+    source = "Компания продала 1 000 устройств и выручила 1,5 млн долларов."
+    summary = "Продано 1,000 устройств, выручка 1.5 млн долларов."
+    assert unsupported_facts(source, summary, source_lang="ru", channel_lang="ru") == []
+
+
+def test_foreign_source_checks_numbers_only() -> None:
+    source = "The Federal Reserve kept the rate at 5.5% and Jerome Powell commented."
+    summary = "Федеральная резервная система оставила ставку 5,5%, заявил Джером Пауэлл."
+    assert unsupported_facts(source, summary, source_lang="en", channel_lang="ru") == []
+
+
+def test_foreign_source_still_catches_invented_numbers() -> None:
+    source = "The central bank kept the rate at 5.5%."
+    summary = "Ставка осталась 7,5%, сообщил Джером Пауэлл."
+    assert unsupported_facts(source, summary, source_lang="en", channel_lang="ru") == ["7,5%"]
+
+
+def test_same_language_checks_names_as_before() -> None:
+    source = "Банк России сохранил ставку."
+    summary = "Банк России сохранил ставку, заявил Джером Пауэлл."
+    expected = ["Джером", "Пауэлл"]
+    assert unsupported_facts(source, summary, source_lang="ru", channel_lang="ru") == expected
+    assert unsupported_facts(source, summary) == expected
+
+
+@pytest.mark.parametrize(
+    ("source_lang", "channel_lang"),
+    [(None, "ru"), ("ru", None), (None, None), ("RU", "ru"), (" ru ", "ru")],
+    ids=["no-source", "no-channel", "both-none", "case", "spaces"],
+)
+def test_unknown_or_same_language_is_not_foreign(
+    source_lang: str | None, channel_lang: str | None
+) -> None:
+    assert is_foreign(source_lang, channel_lang) is False
+
+
+def test_foreign_detection() -> None:
+    assert is_foreign("en", "ru") is True
+    assert is_foreign("EN", "ru") is True
+
+
+def test_foreign_note_mentions_language() -> None:
+    assert FOREIGN_NOTE.format(lang="en") == "перевод из en: имена не проверены автоматически"

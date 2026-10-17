@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Protocol
 
 import structlog
@@ -11,12 +11,17 @@ from aiogram.enums import ParseMode
 
 from app.bot.keyboards import report_keyboard
 from app.bot.screen import new_screen
-from app.config import DailyReportConfig
+from app.config import DailyReportConfig, ReportDay
 from app.reports.service import ReportDeps, ReportPeriod, build_report
 
 log = structlog.get_logger(__name__)
 
 DAILY_REPORT_SETTING = "daily_report_last"
+
+REPORT_PERIODS: dict[ReportDay, ReportPeriod] = {
+    "previous": ReportPeriod.YESTERDAY,
+    "current": ReportPeriod.TODAY,
+}
 
 AdminIds = Sequence[int] | Callable[[], Awaitable[Sequence[int]]]
 
@@ -34,11 +39,12 @@ class LockingSettings(Protocol):
 
 
 class DailyReportSender:
-    """Отправляет отчёт за день всем администраторам один раз в сутки.
+    """Отправляет отчёт за сутки всем администраторам один раз.
 
-    Дата последней отправки читается и пишется в одной транзакции с блокировкой
-    строки настройки, поэтому два экземпляра приложения пришлют отчёт один раз.
-    Пропущенный вчерашний отчёт не досылается: его можно запросить через /report.
+    Отчётный день — вчерашний (daily_report.report_day = previous) или сегодняшний
+    (current) в часовом поясе канала. Дата отчётного дня читается и пишется в одной
+    транзакции с блокировкой строки настройки, поэтому два экземпляра приложения
+    пришлют отчёт один раз, а перезапуск после отправки не повторит её.
     """
 
     def __init__(
@@ -56,7 +62,7 @@ class DailyReportSender:
         self._cfg = cfg
 
     async def send_due(self, now: datetime) -> bool:
-        """Отправляет отчёт, если пришло время и сегодня он ещё не уходил.
+        """Отправляет отчёт, если пришло время и за этот день он ещё не уходил.
 
         Args:
             now: Текущий момент.
@@ -70,21 +76,27 @@ class DailyReportSender:
         if local.timetz().replace(tzinfo=None) < self._cfg.send_time:
             return False
 
-        today = local.date().isoformat()
+        period = REPORT_PERIODS[self._cfg.report_day]
+        day = self._report_day(local.date()).isoformat()
         async with self._deps.session_scope() as session:
             settings = self._settings_repo(session)
-            if await settings.get_for_update(DAILY_REPORT_SETTING) == today:
+            if await settings.get_for_update(DAILY_REPORT_SETTING) == day:
                 return False
-            sent = await self._send_to_admins()
+            sent = await self._send_to_admins(period)
             if not sent:
                 return False
-            await settings.set(DAILY_REPORT_SETTING, today)
-        log.info("report.daily_sent", day=today)
+            await settings.set(DAILY_REPORT_SETTING, day)
+        log.info("report.daily_sent", day=day, period=period.value)
         return True
 
-    async def _send_to_admins(self) -> bool:
-        messages = await build_report(ReportPeriod.TODAY, self._deps)
-        keyboard = report_keyboard(ReportPeriod.TODAY.value)
+    def _report_day(self, today: date) -> date:
+        if self._cfg.report_day == "previous":
+            return today - timedelta(days=1)
+        return today
+
+    async def _send_to_admins(self, period: ReportPeriod) -> bool:
+        messages = await build_report(period, self._deps)
+        keyboard = report_keyboard(period.value)
         delivered = False
         for admin_id in await self._resolve_admins():
             try:

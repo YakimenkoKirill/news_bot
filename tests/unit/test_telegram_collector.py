@@ -1,11 +1,12 @@
 import asyncio
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import structlog.testing
 from telethon.tl.types import PeerChannel
 
 from app.collectors.base import RawItem
@@ -16,10 +17,13 @@ from app.collectors.telegram.collector import (
 )
 from app.db.models import Source
 from app.domain.enums import SourceType
+from app.health import TG_ALIVE_SETTING
 from tests.config_helpers import telegram_config
 
 NOW = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
 CONFIG = telegram_config(catch_up_limit=3)
+MAX_AGE_H = 24.0
+OLD = NOW - timedelta(hours=MAX_AGE_H, minutes=1)
 
 
 def _source(source_id: int, url: str, enabled: bool = True) -> Source:
@@ -35,13 +39,14 @@ def _msg(
     grouped_id: int | None = None,
     photo: bool = False,
     fwd: bool = False,
+    date: datetime | None = NOW,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         id=msg_id,
         message=text,
         entities=[],
         photo=SimpleNamespace(id=msg_id * 10) if photo else None,
-        date=NOW,
+        date=date,
         peer_id=PeerChannel(channel_id=channel_id),
         grouped_id=grouped_id,
         fwd_from=object() if fwd else None,
@@ -58,6 +63,9 @@ class FakeClient:
 
     async def connect(self) -> None:
         self.connected = True
+
+    def is_connected(self) -> bool:
+        return self.connected
 
     async def is_user_authorized(self) -> bool:
         return True
@@ -90,6 +98,15 @@ class Store:
         self.news: dict[str, RawItem] = {}
         self.successes: list[tuple[int, int]] = []
         self.errors: list[tuple[int, BaseException]] = []
+        self.settings: dict[str, Any] = {}
+
+
+class FakeSettings:
+    def __init__(self, store: Store) -> None:
+        self.store = store
+
+    async def set(self, key: str, value: Any) -> None:
+        self.store.settings[key] = value
 
 
 class FakeSources:
@@ -152,7 +169,11 @@ def _deps(store: Store) -> TelegramDeps:
         yield store
 
     return TelegramDeps(
-        session_scope=scope, source_repo=FakeSources, news_repo=FakeNews, health=FakeHealth
+        session_scope=scope,
+        source_repo=FakeSources,
+        news_repo=FakeNews,
+        health=FakeHealth,
+        settings_repo=FakeSettings,
     )
 
 
@@ -160,13 +181,114 @@ CHAN_A = SimpleNamespace(id=111, username="chan_a")
 CHAN_B = SimpleNamespace(id=222, username="chan_b")
 
 
-def _collector(store: Store, client: FakeClient, sleep: ManualSleep) -> TelegramCollector:
-    return TelegramCollector(client, _deps(store), CONFIG, clock=lambda: NOW, album_sleep=sleep)
+def _collector(
+    store: Store,
+    client: FakeClient,
+    sleep: ManualSleep,
+    max_age_h: float = MAX_AGE_H,
+) -> TelegramCollector:
+    return TelegramCollector(
+        client, _deps(store), CONFIG, max_age_h, clock=lambda: NOW, album_sleep=sleep
+    )
 
 
 async def _handler(client: FakeClient) -> Any:
     [(callback, _event)] = client.handlers
     return callback
+
+
+async def test_catch_up_stops_at_message_older_than_max_age() -> None:
+    """Догрузка не уходит глубже filters.max_age_h: старые сообщения не сохраняются."""
+    store = Store([_source(1, "https://t.me/chan_a")])
+    history = {
+        111: [
+            _msg(1, 111, text="позавчера", date=OLD),
+            _msg(2, 111, text="вчера днём", date=OLD),
+            _msg(3, 111, text="свежая", date=NOW - timedelta(hours=2)),
+            _msg(4, 111, text="совсем свежая", date=NOW),
+        ]
+    }
+    client = FakeClient({"chan_a": CHAN_A}, history)
+    collector = _collector(store, client, ManualSleep())
+    with structlog.testing.capture_logs() as logs:
+        await collector.start()
+    assert sorted(store.news) == ["111:3", "111:4"]
+    assert store.successes == [(1, 2)]
+    [entry] = [e for e in logs if e["event"] == "telegram.caught_up"]
+    assert entry["stopped_by_age"] is True
+    assert entry["fetched"] == 2
+
+
+async def test_fresh_messages_work_as_before() -> None:
+    store = Store([_source(1, "chan_a")])
+    history = {111: [_msg(i, 111, text=f"новость {i}", date=NOW) for i in (1, 2)]}
+    client = FakeClient({"chan_a": CHAN_A}, history)
+    collector = _collector(store, client, ManualSleep())
+    with structlog.testing.capture_logs() as logs:
+        await collector.start()
+    assert sorted(store.news) == ["111:1", "111:2"]
+    [entry] = [e for e in logs if e["event"] == "telegram.caught_up"]
+    assert entry["stopped_by_age"] is False
+
+
+async def test_all_messages_old_stores_nothing() -> None:
+    store = Store([_source(1, "chan_a")])
+    history = {111: [_msg(i, 111, text=f"старое {i}", date=OLD) for i in (1, 2, 3)]}
+    client = FakeClient({"chan_a": CHAN_A}, history)
+    collector = _collector(store, client, ManualSleep())
+    await collector.start()
+    assert store.news == {}
+    assert store.successes == [(1, 0)]
+
+
+async def test_album_on_cutoff_border_is_stored_whole() -> None:
+    """Решение по дате — по самому новому сообщению альбома."""
+    store = Store([_source(1, "chan_a")])
+    history = {
+        111: [
+            _msg(5, 111, text="старое", date=OLD),
+            _msg(6, 111, grouped_id=9, photo=True, date=OLD),
+            _msg(7, 111, text="Альбом", grouped_id=9, photo=True, date=NOW),
+        ]
+    }
+    client = FakeClient({"chan_a": CHAN_A}, history)
+    collector = _collector(store, client, ManualSleep())
+    await collector.start()
+    assert list(store.news) == ["111:6"]
+    raw = store.news["111:6"]
+    assert raw.text == "Альбом"
+    assert raw.raw_meta["photo_ids"] == [60, 70]
+    assert "111:5" not in store.news
+
+
+async def test_message_without_date_is_fresh_with_warning() -> None:
+    store = Store([_source(1, "chan_a")])
+    history = {111: [_msg(1, 111, text="без даты", date=None)]}
+    client = FakeClient({"chan_a": CHAN_A}, history)
+    collector = _collector(store, client, ManualSleep())
+    with structlog.testing.capture_logs() as logs:
+        await collector.start()
+    assert list(store.news) == ["111:1"]
+    assert [e for e in logs if e["event"] == "telegram.message_without_date"]
+
+
+async def test_naive_date_compared_as_utc() -> None:
+    store = Store([_source(1, "chan_a")])
+    history = {111: [_msg(1, 111, text="старое без tz", date=OLD.replace(tzinfo=None))]}
+    client = FakeClient({"chan_a": CHAN_A}, history)
+    collector = _collector(store, client, ManualSleep())
+    await collector.start()
+    assert store.news == {}
+
+
+async def test_max_age_from_argument() -> None:
+    store = Store([_source(1, "chan_a")])
+    history = {111: [_msg(1, 111, text="три часа назад", date=NOW - timedelta(hours=3))]}
+    client = FakeClient({"chan_a": CHAN_A}, history)
+    await _collector(store, client, ManualSleep(), max_age_h=1).start()
+    assert store.news == {}
+    await _collector(store, client, ManualSleep(), max_age_h=4).start()
+    assert list(store.news) == ["111:1"]
 
 
 async def test_catch_up_uses_min_id_and_limit() -> None:
@@ -338,3 +460,28 @@ def test_real_components_fit_protocols() -> None:
         health=health,
     )
     assert deps.news_repo is NewsRepository
+
+
+async def test_mark_alive_writes_timestamp() -> None:
+    store = Store([_source(1, "chan_a")])
+    client = FakeClient({"chan_a": CHAN_A}, {})
+    collector = _collector(store, client, ManualSleep())
+    await collector.start()
+
+    assert await collector.mark_alive(NOW) is True
+    assert store.settings[TG_ALIVE_SETTING] == NOW.isoformat()
+
+
+async def test_mark_alive_skips_when_disconnected() -> None:
+    """Telethon отключился — отметка не обновляется, и проверка живости это увидит."""
+    store = Store([_source(1, "chan_a")])
+    client = FakeClient({"chan_a": CHAN_A}, {})
+    collector = _collector(store, client, ManualSleep())
+    await collector.start()
+    await collector.stop()
+
+    with structlog.testing.capture_logs() as logs:
+        assert await collector.mark_alive(NOW) is False
+
+    assert TG_ALIVE_SETTING not in store.settings
+    assert [e for e in logs if e["event"] == "telegram.not_connected"]
