@@ -8,7 +8,16 @@ import pytest
 
 from app import health
 from app.config import CONFIGS_DIR, HealthConfig, Settings, load_settings
-from app.health import HealthResult, check, evaluate_heartbeat, heartbeat_value
+from app.health import (
+    HealthResult,
+    HealthState,
+    check,
+    evaluate_ai,
+    evaluate_heartbeat,
+    evaluate_state,
+    evaluate_tg,
+    heartbeat_value,
+)
 from tests.config_helpers import base_section
 
 NOW = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
@@ -68,10 +77,12 @@ def settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Settings:
 
 
 async def test_check_healthy(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
-    async def read(engine: Any) -> Any:
-        return heartbeat_value(NOW - timedelta(hours=1), NOW - timedelta(seconds=30))
+    async def read(engine: Any, app_settings: Settings, now: Any) -> HealthState:
+        return HealthState(
+            heartbeat=heartbeat_value(NOW - timedelta(hours=1), NOW - timedelta(seconds=30))
+        )
 
-    monkeypatch.setattr(health, "_read_heartbeat", read)
+    monkeypatch.setattr(health, "_read", read)
     assert await check(settings, now=NOW) == HealthResult(ok=True, reasons=[])
 
 
@@ -83,10 +94,11 @@ async def test_unreachable_db_without_traceback(settings: Settings) -> None:
 
 
 async def test_db_timeout(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
-    async def slow(engine: Any) -> Any:
+    async def slow(engine: Any, app_settings: Settings, now: Any) -> HealthState:
         await asyncio.sleep(10)
+        return HealthState()
 
-    monkeypatch.setattr(health, "_read_heartbeat", slow)
+    monkeypatch.setattr(health, "_read", slow)
     fast = settings.model_copy(update={"health": CFG.model_copy(update={"db_timeout_s": 0.01})})
     result = await check(fast, now=NOW)
     assert result.reasons == ["БД не ответила за 0.01 с"]
@@ -117,3 +129,118 @@ def test_exit_codes(
     monkeypatch.setattr(health, "get_settings", lambda: None)
     assert health.main() == code
     assert capsys.readouterr().out.strip() == output
+
+
+def _state(**overrides: Any) -> HealthState:
+    """Состояние с живым heartbeat и нужными переопределениями."""
+    base: dict[str, Any] = {
+        "heartbeat": heartbeat_value(NOW - timedelta(hours=5), NOW - timedelta(seconds=10)),
+        "started_at": NOW - timedelta(hours=5),
+        "has_tg_sources": True,
+        "tg_alive_at": (NOW - timedelta(seconds=10)).isoformat(),
+        "ai_ok_at": (NOW - timedelta(minutes=1)).isoformat(),
+    }
+    base.update(overrides)
+    return HealthState(**base)
+
+
+def test_fresh_tg_mark_is_healthy() -> None:
+    state = _state()
+    assert evaluate_tg(state.tg_alive_at, NOW, CFG, state) == []
+
+
+def test_silent_telethon_is_a_problem() -> None:
+    silence = CFG.tg_max_silence_s + 30
+    state = _state(tg_alive_at=(NOW - timedelta(seconds=silence)).isoformat())
+    [reason] = evaluate_tg(state.tg_alive_at, NOW, CFG, state)
+    assert "Telethon не на связи" in reason
+    assert f"молчит {int(silence)} с" in reason
+
+
+def test_telethon_silence_at_limit_is_healthy() -> None:
+    state = _state(tg_alive_at=(NOW - timedelta(seconds=CFG.tg_max_silence_s)).isoformat())
+    assert evaluate_tg(state.tg_alive_at, NOW, CFG, state) == []
+
+
+def test_telegram_not_checked_without_sources() -> None:
+    """Нет включённых tg-источников — Telethon не нужен."""
+    state = _state(has_tg_sources=False, tg_alive_at=None)
+    assert evaluate_tg(state.tg_alive_at, NOW, CFG, state) == []
+
+
+def test_missing_tg_mark_within_grace() -> None:
+    state = _state(tg_alive_at=None, started_at=NOW - timedelta(seconds=CFG.startup_grace_s - 1))
+    assert evaluate_tg(state.tg_alive_at, NOW, CFG, state) == []
+
+
+def test_missing_tg_mark_after_grace() -> None:
+    state = _state(tg_alive_at=None)
+    [reason] = evaluate_tg(state.tg_alive_at, NOW, CFG, state)
+    assert "отметки нет" in reason
+
+
+def test_broken_tg_mark_is_a_problem() -> None:
+    state = _state(tg_alive_at="вчера")
+    assert evaluate_tg(state.tg_alive_at, NOW, CFG, state) != []
+
+
+def test_fresh_ai_mark_is_healthy() -> None:
+    state = _state(ai_backlog=True)
+    assert evaluate_ai(state.ai_ok_at, NOW, CFG, state) == []
+
+
+def test_stalled_model_with_backlog_is_a_problem() -> None:
+    state = _state(
+        ai_backlog=True,
+        ai_ok_at=(NOW - timedelta(minutes=CFG.ai_backlog_min + 5)).isoformat(),
+    )
+    [reason] = evaluate_ai(state.ai_ok_at, NOW, CFG, state)
+    assert "модель не обрабатывает очередь" in reason
+    assert "последний ответ 35 мин назад" in reason
+
+
+def test_model_not_checked_without_backlog() -> None:
+    """Очередь normalized пуста — модели нечего обрабатывать."""
+    state = _state(ai_backlog=False, ai_ok_at=(NOW - timedelta(days=3)).isoformat())
+    assert evaluate_ai(state.ai_ok_at, NOW, CFG, state) == []
+
+
+def test_pause_is_not_a_problem() -> None:
+    state = _state(ai_backlog=True, paused=True, ai_ok_at=None)
+    assert evaluate_ai(state.ai_ok_at, NOW, CFG, state) == []
+
+
+def test_exhausted_budget_is_not_a_problem() -> None:
+    state = _state(ai_backlog=True, budget_exhausted=True, ai_ok_at=None)
+    assert evaluate_ai(state.ai_ok_at, NOW, CFG, state) == []
+
+
+def test_missing_ai_mark_within_grace() -> None:
+    state = _state(
+        ai_backlog=True,
+        ai_ok_at=None,
+        started_at=NOW - timedelta(seconds=CFG.startup_grace_s - 1),
+    )
+    assert evaluate_ai(state.ai_ok_at, NOW, CFG, state) == []
+
+
+def test_missing_ai_mark_after_grace() -> None:
+    state = _state(ai_backlog=True, ai_ok_at=None)
+    [reason] = evaluate_ai(state.ai_ok_at, NOW, CFG, state)
+    assert "ответов нет" in reason
+
+
+def test_evaluate_state_groups_reasons() -> None:
+    state = _state(
+        tg_alive_at=(NOW - timedelta(hours=2)).isoformat(),
+        ai_backlog=True,
+        ai_ok_at=(NOW - timedelta(hours=2)).isoformat(),
+    )
+    problems = evaluate_state(state, NOW, CFG)
+    assert set(problems) == {"heartbeat", "telegram", "ai"}
+    assert problems["heartbeat"] == []
+    assert problems["telegram"] and problems["ai"]
+
+
+def test_healthy_state_has_no_reasons() -> None:
+    assert all(not reasons for reasons in evaluate_state(_state(), NOW, CFG).values())

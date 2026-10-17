@@ -17,6 +17,7 @@ from app.collectors.telegram.collector import (
 )
 from app.db.models import Source
 from app.domain.enums import SourceType
+from app.health import TG_ALIVE_SETTING
 from tests.config_helpers import telegram_config
 
 NOW = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
@@ -63,6 +64,9 @@ class FakeClient:
     async def connect(self) -> None:
         self.connected = True
 
+    def is_connected(self) -> bool:
+        return self.connected
+
     async def is_user_authorized(self) -> bool:
         return True
 
@@ -94,6 +98,15 @@ class Store:
         self.news: dict[str, RawItem] = {}
         self.successes: list[tuple[int, int]] = []
         self.errors: list[tuple[int, BaseException]] = []
+        self.settings: dict[str, Any] = {}
+
+
+class FakeSettings:
+    def __init__(self, store: Store) -> None:
+        self.store = store
+
+    async def set(self, key: str, value: Any) -> None:
+        self.store.settings[key] = value
 
 
 class FakeSources:
@@ -156,7 +169,11 @@ def _deps(store: Store) -> TelegramDeps:
         yield store
 
     return TelegramDeps(
-        session_scope=scope, source_repo=FakeSources, news_repo=FakeNews, health=FakeHealth
+        session_scope=scope,
+        source_repo=FakeSources,
+        news_repo=FakeNews,
+        health=FakeHealth,
+        settings_repo=FakeSettings,
     )
 
 
@@ -443,3 +460,28 @@ def test_real_components_fit_protocols() -> None:
         health=health,
     )
     assert deps.news_repo is NewsRepository
+
+
+async def test_mark_alive_writes_timestamp() -> None:
+    store = Store([_source(1, "chan_a")])
+    client = FakeClient({"chan_a": CHAN_A}, {})
+    collector = _collector(store, client, ManualSleep())
+    await collector.start()
+
+    assert await collector.mark_alive(NOW) is True
+    assert store.settings[TG_ALIVE_SETTING] == NOW.isoformat()
+
+
+async def test_mark_alive_skips_when_disconnected() -> None:
+    """Telethon отключился — отметка не обновляется, и проверка живости это увидит."""
+    store = Store([_source(1, "chan_a")])
+    client = FakeClient({"chan_a": CHAN_A}, {})
+    collector = _collector(store, client, ManualSleep())
+    await collector.start()
+    await collector.stop()
+
+    with structlog.testing.capture_logs() as logs:
+        assert await collector.mark_alive(NOW) is False
+
+    assert TG_ALIVE_SETTING not in store.settings
+    assert [e for e in logs if e["event"] == "telegram.not_connected"]

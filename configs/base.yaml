@@ -137,6 +137,7 @@ scheduler:
   recover_every_min: 10   # как часто искать зависшие отправки (publisher.stuck_after_min)
   retention_every_h: 24   # как часто очищать тексты старых новостей
   stats_every_min: 60     # как часто собирать статистику постов канала
+  health_every_min: 5     # как часто проверять живость компонентов и алертить
   misfire_grace_s: 60
   failures_before_alert: 3
 
@@ -173,6 +174,9 @@ health:
   max_age_s: 180
   db_timeout_s: 5
   startup_grace_s: 300
+  tg_beat_s: 60            # как часто сборщик отмечает, что Telethon на связи
+  tg_max_silence_s: 600    # после этого молчания Telethon считается отключённым
+  ai_backlog_min: 30       # столько минут очередь normalized ждёт модель, прежде чем это проблема
 
 backup:
   keep_days: 7

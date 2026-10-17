@@ -112,6 +112,8 @@ ALERT_TEMPLATES = {
     "job_failed": "⚠️ <b>Ошибка фоновой задачи</b>\n{message}",
     "ai_item_failed": "🟠 <b>Модель не смогла обработать новость</b>\n{message}",
     "stats_unavailable": "🟡 <b>Статистика канала недоступна</b>\n{message}",
+    "tg_down": "🔴 <b>Telethon не на связи</b>\n{message}",
+    "ai_stalled": "🔴 <b>Модель не обрабатывает очередь</b>\n{message}",
 }
 
 QUEUE_TITLES = {"queue": "<b>Очередь публикации</b>", "review": "<b>На модерации</b>"}
@@ -198,6 +200,8 @@ ALERT_KIND_LABELS = {
     "job_failed": "сбой фоновой задачи",
     "ai_item_failed": "новость не обработана",
     "stats_unavailable": "статистика канала недоступна",
+    "tg_down": "Telethon не на связи",
+    "ai_stalled": "модель не обрабатывает очередь",
 }
 
 ERRORS_TITLE = "<b>Ошибки</b> · открыто {count}"

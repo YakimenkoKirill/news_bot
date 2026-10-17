@@ -49,6 +49,14 @@ def test_format_each_kind(kind: AlertKind) -> None:
     assert "Источник «A &amp; B» &lt;упал&gt;" in text
 
 
+@pytest.mark.parametrize("kind", [AlertKind.TG_DOWN, AlertKind.AI_STALLED])
+def test_component_kinds_have_own_template(kind: AlertKind) -> None:
+    """Новые виды видно и в чате, и в журнале ошибок."""
+    text = format_alert(_event(kind, key=kind.value))
+    assert texts.ALERT_TEMPLATES[kind.value].split("{")[0] in text
+    assert kind.value in texts.ALERT_KIND_LABELS
+
+
 async def test_sent_to_all_admins_as_html() -> None:
     bot = FakeBot()
     await AlertService(bot, ADMINS, CFG, clock=Clock()).emit(_event())

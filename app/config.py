@@ -292,6 +292,7 @@ class SchedulerConfig(BaseModel):
     recover_every_min: float = Field(gt=0)
     retention_every_h: float = Field(gt=0)
     stats_every_min: float = Field(gt=0)
+    health_every_min: float = Field(gt=0)
     misfire_grace_s: int = Field(ge=1)
     failures_before_alert: int = Field(ge=1)
 
@@ -383,6 +384,9 @@ class HealthConfig(BaseModel):
     max_age_s: float = Field(gt=0)
     db_timeout_s: float = Field(gt=0)
     startup_grace_s: float = Field(ge=0)
+    tg_beat_s: float = Field(gt=0)
+    tg_max_silence_s: float = Field(gt=0)
+    ai_backlog_min: float = Field(gt=0)
 
 
 class BackupConfig(BaseModel):

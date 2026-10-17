@@ -20,6 +20,7 @@ from app.collectors.telegram.convert import message_to_raw_item
 from app.config import TelegramConfig
 from app.db.models import Source
 from app.domain.enums import SourceType
+from app.health import TG_ALIVE_SETTING
 from app.logging import bind_context
 
 log = structlog.get_logger(__name__)
@@ -63,6 +64,14 @@ class TgNewsRepo(Protocol):
         raise NotImplementedError
 
 
+class TgSettingsRepo(Protocol):
+    """Нужная сборщику часть SettingsRepository."""
+
+    async def set(self, key: str, value: Any) -> None:
+        """Сохраняет настройку."""
+        raise NotImplementedError
+
+
 class TgHealth(Protocol):
     """Нужная сборщику часть SourceHealthTracker."""
 
@@ -83,6 +92,7 @@ class TelegramDeps:
     source_repo: Callable[[Any], TgSourcesRepo]
     news_repo: Callable[[Any], TgNewsRepo]
     health: Callable[[Any], TgHealth]
+    settings_repo: Callable[[Any], TgSettingsRepo] | None = None
 
 
 @dataclass(frozen=True)
@@ -272,6 +282,28 @@ class TelegramCollector:
             min_id=min_id,
             stopped_by_age=stopped_by_age,
         )
+
+    async def mark_alive(self, now: datetime) -> bool:
+        """Отмечает в настройках, что Telethon на связи.
+
+        Отметка tg_alive_at пишется только при живом подключении: по её возрасту
+        проверка живости видит отключившийся Telethon. Если репозиторий настроек
+        не передан (например, в тестах сборщика), метод ничего не делает.
+
+        Args:
+            now: Текущий момент.
+
+        Returns:
+            True, если отметка записана.
+        """
+        if self._deps.settings_repo is None:
+            return False
+        if not bool(self._client.is_connected()):
+            log.warning("telegram.not_connected")
+            return False
+        async with self._deps.session_scope() as session:
+            await self._deps.settings_repo(session).set(TG_ALIVE_SETTING, now.isoformat())
+        return True
 
     async def fetch_post_stats(
         self, channel_id: int, message_ids: Sequence[int]

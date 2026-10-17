@@ -11,6 +11,7 @@ import pytest
 from app.db.models import AiRequest, ProcessedPost
 from app.domain.alerts import AlertEvent, AlertKind
 from app.domain.enums import ModerationMode, NewsStatus
+from app.health import AI_OK_SETTING
 from app.pipeline.ai.budget import BudgetExceeded
 from app.pipeline.ai.client import AiFatalError, AiUnavailableError
 from app.pipeline.ai.processor import AiRepos, ModeratedSource, ProcessableNews
@@ -98,6 +99,9 @@ class SettingsRepo:
 
     async def get(self, key: str, default: Any = None) -> Any:
         return self.db.settings.get(key, default)
+
+    async def set(self, key: str, value: Any) -> None:
+        self.db.settings[key] = value
 
 
 class FakeProcessor:
@@ -457,3 +461,29 @@ async def test_without_admission_processor_gets_none() -> None:
 
     await process_normalized_batch(NOW, replace(env.deps, processor=processor))
     assert captured and all(repos.admit is None for repos in captured)
+
+
+async def test_ai_ok_mark_written_after_model_answer() -> None:
+    """Успешный ответ модели отмечается: по этой метке проверка живости видит работу."""
+    env = _env(1)
+    await process_normalized_batch(NOW, env.deps)
+    assert env.db.settings[AI_OK_SETTING] == NOW.isoformat()
+
+
+async def test_ai_ok_mark_written_even_for_failed_news() -> None:
+    """Модель ответила, но ответ плохой: она всё равно на связи."""
+    env = _env(1, plan={1: NewsStatus.FAILED})
+    await process_normalized_batch(NOW, env.deps)
+    assert AI_OK_SETTING in env.db.settings
+
+
+async def test_ai_ok_mark_not_written_when_api_down() -> None:
+    env = _env(1, plan={1: AiUnavailableError("down")})
+    await process_normalized_batch(NOW, env.deps)
+    assert AI_OK_SETTING not in env.db.settings
+
+
+async def test_ai_ok_mark_not_written_when_budget_exceeded() -> None:
+    env = _env(1, budget=Budget(exceed_after=0))
+    await process_normalized_batch(NOW, env.deps)
+    assert AI_OK_SETTING not in env.db.settings

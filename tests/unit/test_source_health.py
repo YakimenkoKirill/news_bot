@@ -177,4 +177,6 @@ def test_alert_event_validation() -> None:
         "job_failed",
         "ai_item_failed",
         "stats_unavailable",
+        "tg_down",
+        "ai_stalled",
     ]

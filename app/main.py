@@ -66,7 +66,7 @@ from app.db.repositories.screens import ScreenRepository
 from app.db.repositories.sources import SourceRepository
 from app.domain.alerts import AlertEvent, AlertKind
 from app.domain.enums import SourceType
-from app.health import HEARTBEAT_SETTING, heartbeat_value
+from app.health import HEARTBEAT_SETTING, evaluate_state, heartbeat_value, read_state
 from app.logging import setup_logging
 from app.pipeline.ai.budget import BudgetGuard
 from app.pipeline.ai.client import DeepSeekClient
@@ -254,6 +254,7 @@ def build_components(settings: Settings) -> list[Component]:
             source_repo=SourceRepository,
             news_repo=NewsRepository,
             health=health,
+            settings_repo=SettingsRepository,
         ),
         settings.telegram,
         settings.filters.max_age_h,
@@ -428,6 +429,32 @@ def build_components(settings: Settings) -> list[Component]:
         log.info("retention.stripped", count=stripped, before=before.isoformat())
         return stripped
 
+    async def health_watch(now: datetime) -> dict[str, list[str]]:
+        """Проверяет компоненты и алертит о проблемах Telethon и модели.
+
+        Args:
+            now: Текущий момент.
+
+        Returns:
+            Причины по компонентам (пустые списки — всё в порядке).
+        """
+        async with scope() as session:
+            state = await read_state(session, settings, now)
+        problems = evaluate_state(state, now, settings.health)
+        for kind, component in ((AlertKind.TG_DOWN, "telegram"), (AlertKind.AI_STALLED, "ai")):
+            reasons = problems[component]
+            if not reasons:
+                continue
+            await alerts.emit(
+                AlertEvent(
+                    kind=kind,
+                    key=kind.value,
+                    message="; ".join(reasons),
+                    created_at=now,
+                )
+            )
+        return problems
+
     async def heartbeat(now: datetime) -> None:
         async with scope() as session:
             await SettingsRepository(session).set(
@@ -448,9 +475,12 @@ def build_components(settings: Settings) -> list[Component]:
             recover_stuck=lambda now: recover_stuck(now, publish_deps),
             retention=retention,
             post_stats=lambda now: collect_post_stats(now, stats_deps),
+            tg_beat=telegram.mark_alive,
+            health=health_watch,
             sink=alerts,
         ),
         settings.scheduler,
+        tg_beat_s=settings.health.tg_beat_s,
     )
 
     dispatcher = create_dispatcher(

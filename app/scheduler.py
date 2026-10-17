@@ -32,6 +32,8 @@ JOB_DAILY_REPORT = "daily_report"
 JOB_RECOVER = "recover_stuck"
 JOB_RETENTION = "retention"
 JOB_POST_STATS = "post_stats"
+JOB_TG_BEAT = "tg_beat"
+JOB_HEALTH = "health"
 
 
 @dataclass(frozen=True)
@@ -53,6 +55,8 @@ class SchedulerDeps:
         recover_stuck: разбор зависших отправок (recover_stuck).
         retention: очистка текстов старых новостей.
         post_stats: сбор статистики опубликованных постов.
+        tg_beat: отметка «Telethon на связи».
+        health: проверка живости компонентов и алерты tg_down и ai_stalled.
         sink: Получатель алертов job_failed.
         clock: Источник текущего времени.
     """
@@ -69,6 +73,8 @@ class SchedulerDeps:
     recover_stuck: Job
     retention: Job
     post_stats: Job
+    tg_beat: Job
+    health: Job
     sink: AlertSink
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
 
@@ -140,12 +146,17 @@ class JobRunner:
 
 
 def build_scheduler(
-    deps: SchedulerDeps, cfg: SchedulerConfig
+    deps: SchedulerDeps, cfg: SchedulerConfig, *, tg_beat_s: float
 ) -> tuple[AsyncIOScheduler, JobRunner]:
     """Создаёт планировщик со всеми задачами пайплайна.
 
     Все задачи: max_instances=1 (запуски не перекрываются), coalesce=True
     (пропущенные запуски схлопываются), misfire_grace_time из конфигурации.
+
+    Args:
+        deps: Задачи и получатель алертов.
+        cfg: Секция scheduler с интервалами.
+        tg_beat_s: Как часто отмечать связь Telethon (health.tg_beat_s).
 
     Returns:
         Планировщик (ещё не запущен) и обёртка задач со счётчиками ошибок.
@@ -169,6 +180,8 @@ def build_scheduler(
         (JOB_RECOVER, deps.recover_stuck, IntervalTrigger(minutes=cfg.recover_every_min)),
         (JOB_RETENTION, deps.retention, IntervalTrigger(hours=cfg.retention_every_h)),
         (JOB_POST_STATS, deps.post_stats, IntervalTrigger(minutes=cfg.stats_every_min)),
+        (JOB_TG_BEAT, deps.tg_beat, IntervalTrigger(seconds=tg_beat_s)),
+        (JOB_HEALTH, deps.health, IntervalTrigger(minutes=cfg.health_every_min)),
     ]
     for job_id, job, trigger in jobs:
         scheduler.add_job(

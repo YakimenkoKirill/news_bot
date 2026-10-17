@@ -16,6 +16,7 @@ import structlog
 from app.db.models import ProcessedPost
 from app.domain.alerts import AlertEvent, AlertKind, AlertSink
 from app.domain.enums import NewsStatus
+from app.health import AI_OK_SETTING
 from app.logging import bind_context
 from app.pipeline.ai.budget import BudgetExceeded
 from app.pipeline.ai.client import AiFatalError, AiUnavailableError
@@ -70,6 +71,10 @@ class SettingsGetter(Protocol):
 
     async def get(self, key: str, default: Any = None) -> Any:
         """Значение настройки."""
+        raise NotImplementedError
+
+    async def set(self, key: str, value: Any) -> None:
+        """Сохраняет настройку."""
         raise NotImplementedError
 
 
@@ -272,6 +277,8 @@ async def _process_one(item: ClaimableNews, now: datetime, deps: AiStageDeps) ->
             except BudgetExceeded:
                 out_of_budget = True
                 status = None
+            else:
+                await deps.settings_repo(session).set(AI_OK_SETTING, now.isoformat())
             if status is NewsStatus.PENDING_REVIEW:
                 post = await posts.get_by_news(item.id)
     except (AiUnavailableError, AiFatalError) as exc:
